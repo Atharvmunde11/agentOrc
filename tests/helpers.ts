@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, vi } from "vitest";
-import { AgentOrc } from "../src/index.js";
+import { Wolbarg } from "../src/index.js";
 import type { InitOptions } from "../src/index.js";
 
 export const EMBED_DIMS = 8;
@@ -111,17 +111,17 @@ export function installFetchMock(options?: {
 export async function createInitializedClient(
   overrides?: Partial<InitOptions>,
   fetchOptions?: Parameters<typeof installFetchMock>[0],
-): Promise<AgentOrc> {
+): Promise<Wolbarg> {
   installFetchMock(fetchOptions);
-  const ctx = new AgentOrc();
+  const ctx = new Wolbarg();
   await ctx.init(baseInitOptions(overrides));
   return ctx;
 }
 
 export function useClientLifecycle(): {
-  getClient: () => AgentOrc;
+  getClient: () => Wolbarg;
 } {
-  let client: AgentOrc;
+  let client: Wolbarg;
 
   beforeEach(async () => {
     client = await createInitializedClient();

@@ -46,13 +46,21 @@ export function assertFiniteNumber(
   }
 }
 
+const EMPTY_META_JSON = "{}";
+
 /** Safely serialize opaque metadata to JSON text. */
 export function serializeMetadata(metadata: Record<string, unknown>): string {
-  return JSON.stringify(metadata);
+  for (const _key in metadata) {
+    return JSON.stringify(metadata);
+  }
+  return EMPTY_META_JSON;
 }
 
 /** Safely deserialize opaque metadata from JSON text. */
 export function deserializeMetadata(raw: string): Record<string, unknown> {
+  if (!raw || raw === EMPTY_META_JSON) {
+    return {};
+  }
   try {
     const parsed: unknown = JSON.parse(raw);
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {

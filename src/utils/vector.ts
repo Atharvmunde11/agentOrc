@@ -22,9 +22,21 @@ export function cosineDistance(a: Float32Array, b: Float32Array): number {
   return 1 - similarity;
 }
 
-/** Decode a float32 embedding from a SQLite BLOB. */
+/**
+ * Decode a float32 embedding from a SQLite BLOB.
+ * Avoids a copy when the underlying ArrayBuffer is already aligned/owned.
+ */
 export function bufferToEmbedding(data: Uint8Array | Buffer): Float32Array {
-  const copy = new Uint8Array(data.byteLength);
+  const byteOffset = (data as Uint8Array).byteOffset ?? 0;
+  const byteLength = data.byteLength;
+  if (byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+    return new Float32Array(
+      (data as Uint8Array).buffer,
+      byteOffset,
+      byteLength / Float32Array.BYTES_PER_ELEMENT,
+    );
+  }
+  const copy = new Uint8Array(byteLength);
   copy.set(data);
   return new Float32Array(copy.buffer);
 }

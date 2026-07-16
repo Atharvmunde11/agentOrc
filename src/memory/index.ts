@@ -21,17 +21,16 @@ export function toMemoryRecord(row: MemoryRow): MemoryRecord {
 }
 
 export function toRecallResult(row: MemoryRow, similarity: number): RecallResult {
-  const record = toMemoryRecord(row);
   return {
-    id: record.id,
-    organization: record.organization,
-    agent: record.agent,
-    content: record.content,
-    metadata: record.metadata,
-    archived: record.archived,
+    id: row.id,
+    organization: row.organization,
+    agent: row.agent,
+    content: { text: row.content_text },
+    metadata: deserializeMetadata(row.metadata_json),
+    archived: row.archived === 1,
     similarity,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
+    createdAt: parseIso(row.created_at),
+    updatedAt: parseIso(row.updated_at),
   };
 }
 

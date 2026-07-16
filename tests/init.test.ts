@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  AgentOrc,
+  Wolbarg,
   ConfigurationError,
   InitializationError,
 } from "../src/index.js";
@@ -14,7 +14,7 @@ describe("initialization", () => {
 
   it("initializes successfully with valid config", async () => {
     installFetchMock();
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await ctx.init(baseInitOptions());
     expect(ctx.isInitialized).toBe(true);
     const stats = await ctx.stats();
@@ -28,7 +28,7 @@ describe("initialization", () => {
 
   it("rejects double initialization", async () => {
     installFetchMock();
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await ctx.init(baseInitOptions());
     await expect(ctx.init(baseInitOptions())).rejects.toBeInstanceOf(
       InitializationError,
@@ -38,7 +38,7 @@ describe("initialization", () => {
 
   it("rejects missing organization", async () => {
     installFetchMock();
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await expect(
       ctx.init(baseInitOptions({ organization: "   " })),
     ).rejects.toBeInstanceOf(ConfigurationError);
@@ -46,7 +46,7 @@ describe("initialization", () => {
 
   it("rejects invalid embedding baseUrl", async () => {
     installFetchMock();
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await expect(
       ctx.init(
         baseInitOptions({
@@ -62,7 +62,7 @@ describe("initialization", () => {
 
   it("rejects unsupported database provider", async () => {
     installFetchMock();
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await expect(
       ctx.init({
         ...baseInitOptions(),
@@ -76,13 +76,13 @@ describe("initialization", () => {
 
   it("fails when embedding endpoint is unreachable", async () => {
     installFetchMock({ failEmbeddings: true });
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await expect(ctx.init(baseInitOptions())).rejects.toThrow();
     expect(ctx.isInitialized).toBe(false);
   });
 
   it("requires init before API use", async () => {
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await expect(
       ctx.remember({
         agent: "a",

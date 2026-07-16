@@ -74,7 +74,7 @@ export class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
 
   async validate(): Promise<{ dimensions: number }> {
     try {
-      const embedding = await this.embed("agentorc health check");
+      const embedding = await this.embed("Wolbarg health check");
       return { dimensions: embedding.length };
     } catch (error) {
       if (error instanceof EmbeddingError) {

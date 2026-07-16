@@ -1,22 +1,22 @@
 /**
- * Custom error hierarchy for agentOrc.
+ * Custom error hierarchy for Wolbarg.
  * Raw SQLite / network errors are never exposed to consumers.
  */
 
-/** Base class for all agentOrc errors. */
-export class AgentOrcError extends Error {
+/** Base class for all Wolbarg errors. */
+export class WolbargError extends Error {
   readonly code: string;
 
   constructor(message: string, code: string, options?: ErrorOptions) {
     super(message, options);
-    this.name = "AgentOrcError";
+    this.name = "WolbargError";
     this.code = code;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
 /** Thrown when SDK initialization fails. */
-export class InitializationError extends AgentOrcError {
+export class InitializationError extends WolbargError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, "INITIALIZATION_ERROR", options);
     this.name = "InitializationError";
@@ -24,7 +24,7 @@ export class InitializationError extends AgentOrcError {
 }
 
 /** Thrown when configuration values are missing or invalid. */
-export class ConfigurationError extends AgentOrcError {
+export class ConfigurationError extends WolbargError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, "CONFIGURATION_ERROR", options);
     this.name = "ConfigurationError";
@@ -32,7 +32,7 @@ export class ConfigurationError extends AgentOrcError {
 }
 
 /** Thrown when method arguments fail validation. */
-export class ValidationError extends AgentOrcError {
+export class ValidationError extends WolbargError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, "VALIDATION_ERROR", options);
     this.name = "ValidationError";
@@ -40,7 +40,7 @@ export class ValidationError extends AgentOrcError {
 }
 
 /** Thrown when a database operation fails. */
-export class DatabaseError extends AgentOrcError {
+export class DatabaseError extends WolbargError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, "DATABASE_ERROR", options);
     this.name = "DatabaseError";
@@ -48,7 +48,7 @@ export class DatabaseError extends AgentOrcError {
 }
 
 /** Thrown when an embedding request fails. */
-export class EmbeddingError extends AgentOrcError {
+export class EmbeddingError extends WolbargError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, "EMBEDDING_ERROR", options);
     this.name = "EmbeddingError";
@@ -56,7 +56,7 @@ export class EmbeddingError extends AgentOrcError {
 }
 
 /** Thrown when compression (LLM summarization) fails. */
-export class CompressionError extends AgentOrcError {
+export class CompressionError extends WolbargError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, "COMPRESSION_ERROR", options);
     this.name = "CompressionError";
@@ -64,7 +64,7 @@ export class CompressionError extends AgentOrcError {
 }
 
 /** Thrown when a requested memory does not exist. */
-export class MemoryNotFoundError extends AgentOrcError {
+export class MemoryNotFoundError extends WolbargError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, "MEMORY_NOT_FOUND", options);
     this.name = "MemoryNotFoundError";

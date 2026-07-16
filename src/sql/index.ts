@@ -3,9 +3,9 @@
  */
 
 export const SQL = {
-  getMeta: `SELECT value FROM agentorc_meta WHERE key = ?`,
+  getMeta: `SELECT value FROM Wolbarg_meta WHERE key = ?`,
   setMeta: `
-    INSERT INTO agentorc_meta (key, value) VALUES (?, ?)
+    INSERT INTO Wolbarg_meta (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `,
 
@@ -14,6 +14,8 @@ export const SQL = {
       id, organization, agent, content_text, metadata_json,
       archived, compressed_into, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?)
+    RETURNING rowid, id, organization, agent, content_text, metadata_json,
+              archived, compressed_into, created_at, updated_at
   `,
 
   getMemoryById: `
@@ -28,6 +30,13 @@ export const SQL = {
            archived, compressed_into, created_at, updated_at
     FROM memories
     WHERE rowid = ? AND organization = ?
+  `,
+
+  getMemoriesByRowidsPrefix: `
+    SELECT rowid, id, organization, agent, content_text, metadata_json,
+           archived, compressed_into, created_at, updated_at
+    FROM memories
+    WHERE organization = ? AND rowid IN (
   `,
 
   listMemoriesBase: `
@@ -100,8 +109,26 @@ export const SQL = {
     SELECT COUNT(*) AS count FROM memories WHERE organization = ?
   `,
 
+  countActiveMemories: `
+    SELECT COUNT(*) AS count FROM memories WHERE organization = ? AND archived = 0
+  `,
+
+  countArchivedMemories: `
+    SELECT COUNT(*) AS count FROM memories WHERE organization = ? AND archived = 1
+  `,
+
   countAgents: `
-    SELECT COUNT(DISTINCT agent) AS count FROM memories WHERE organization = ?
+    SELECT COUNT(DISTINCT agent) AS count FROM memories WHERE organization = ? AND archived = 0
+  `,
+
+  /** FTS ranked by BM25 (archived rows are deleted from FTS on archive). */
+  searchFts: `
+    SELECT memory_id, bm25(memories_fts) AS rank
+    FROM memories_fts
+    WHERE memories_fts MATCH ?
+      AND organization = ?
+    ORDER BY rank
+    LIMIT ?
   `,
 
   listRowidsForOrg: `
@@ -132,14 +159,5 @@ export const SQL = {
 
   deleteFts: `
     DELETE FROM memories_fts WHERE memory_id = ?
-  `,
-
-  searchFts: `
-    SELECT memory_id, bm25(memories_fts) AS rank
-    FROM memories_fts
-    WHERE memories_fts MATCH ?
-      AND organization = ?
-    ORDER BY rank
-    LIMIT ?
   `,
 } as const;

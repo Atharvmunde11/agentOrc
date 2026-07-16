@@ -14,7 +14,7 @@ export const META_KEYS = {
 export type VectorBackend = "sqlite-vec" | "blob";
 
 export const CREATE_META_TABLE = `
-CREATE TABLE IF NOT EXISTS agentorc_meta (
+CREATE TABLE IF NOT EXISTS Wolbarg_meta (
   key TEXT PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
 );
@@ -68,6 +68,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_memories_org_agent ON memories(organization, agent);`,
   `CREATE INDEX IF NOT EXISTS idx_memories_org_archived ON memories(organization, archived);`,
+  /** Active-set covering path for org-scoped list / stats / compress. */
+  `CREATE INDEX IF NOT EXISTS idx_memories_org_active_created
+     ON memories(organization, created_at) WHERE archived = 0;`,
   `CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);`,
   `CREATE INDEX IF NOT EXISTS idx_history_memory_id ON memory_history(memory_id);`,
 ] as const;

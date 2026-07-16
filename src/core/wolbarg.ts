@@ -1,11 +1,11 @@
 /**
- * AgentOrc — modular semantic memory SDK for AI agents (v0.2).
+ * Wolbarg — modular semantic memory SDK for AI agents (v0.2).
  *
  * @example
  * ```ts
- * import { AgentOrc, sqlite, openaiEmbedding, openaiLlm } from "agentorc";
+ * import { Wolbarg, sqlite, openaiEmbedding, openaiLlm } from "wolbarg";
  *
- * const ctx = new AgentOrc({
+ * const ctx = new Wolbarg({
  *   organization: "my-org",
  *   storage: sqlite("./memory.db"),
  *   embedding: openaiEmbedding({
@@ -49,6 +49,7 @@ import type { RerankerProvider } from "../rerank/index.js";
 import type { VisionProvider } from "../vision/index.js";
 import { createStorageProvider } from "../storage/index.js";
 import type { StorageProvider } from "../storage/types.js";
+import type { MemoryRow } from "../storage/types.js";
 import { matchesMetadata } from "../filters/match.js";
 import {
   toHistoryEvent,
@@ -96,16 +97,16 @@ import {
   nowIso,
 } from "../utils/index.js";
 import type {
-  AgentOrcOptions,
-  AgentOrcOptionsWithLlm,
-  AgentOrcOptionsWithoutLlm,
+  WolbargOptions,
+  WolbargOptionsWithLlm,
+  WolbargOptionsWithoutLlm,
 } from "./options.js";
 import {
   isEmbeddingProvider,
   isLlmProvider,
   isStorageProvider,
 } from "./options.js";
-import { validateAgentOrcOptions, validateInitOptions } from "./validate.js";
+import { validateWolbargOptions, validateInitOptions } from "./validate.js";
 
 type ReadyState = {
   storage: StorageProvider;
@@ -113,7 +114,7 @@ type ReadyState = {
   organization: string;
 };
 
-export class AgentOrc<HasLlm extends boolean = false> {
+export class Wolbarg<HasLlm extends boolean = false> {
   /** Compile-time capability flag — `true` when constructed with `llm`. */
   declare readonly __hasLlm: HasLlm;
 
@@ -134,21 +135,21 @@ export class AgentOrc<HasLlm extends boolean = false> {
   private readonly writeMutex = new AsyncMutex();
 
   /**
-   * Create an AgentOrc instance.
+   * Create an Wolbarg instance.
    * When options are provided, providers are wired immediately and
    * storage opens lazily on the first API call (or {@link ready}).
    *
    * Pass `llm` to enable {@link compress} (typed at compile time).
    */
-  constructor(options: AgentOrcOptionsWithLlm);
-  constructor(options: AgentOrcOptionsWithoutLlm);
+  constructor(options: WolbargOptionsWithLlm);
+  constructor(options: WolbargOptionsWithoutLlm);
   constructor();
-  constructor(options?: AgentOrcOptions) {
+  constructor(options?: WolbargOptions) {
     if (!options) {
       return;
     }
 
-    const validated = validateAgentOrcOptions(options);
+    const validated = validateWolbargOptions(options);
     this.organization = validated.organization;
     this.storage = isStorageProvider(validated.storage)
       ? validated.storage
@@ -181,7 +182,7 @@ export class AgentOrc<HasLlm extends boolean = false> {
    */
   async init(options: InitOptions): Promise<void> {
     if (this.initialized || this.storage) {
-      throw new InitializationError("AgentOrc is already initialized");
+      throw new InitializationError("Wolbarg is already initialized");
     }
 
     let validated: InitOptions;
@@ -228,7 +229,7 @@ export class AgentOrc<HasLlm extends boolean = false> {
   private async boot(): Promise<void> {
     if (!this.storage || !this.embedding || !this.organization) {
       throw new InitializationError(
-        "AgentOrc is not configured. Pass options to the constructor or call init().",
+        "Wolbarg is not configured. Pass options to the constructor or call init().",
       );
     }
 
@@ -269,13 +270,17 @@ export class AgentOrc<HasLlm extends boolean = false> {
       throw new ValidationError("metadata must be a plain object when provided");
     }
 
+    const profile = process.env.WOLBARG_PROFILE === "1";
+    const t0 = profile ? performance.now() : 0;
     const vector = await embedding.embed(options.content.text);
+    const embedMs = profile ? performance.now() - t0 : 0;
     this.assertEmbeddingDimensions(vector.length);
 
     const id = createId();
     const timestamp = nowIso();
 
-    return this.writeMutex.runExclusive(async () => {
+    return this.withWriteLock(async () => {
+      const tStore = profile ? performance.now() : 0;
       const row = await storage.insertMemory({
         id,
         organization,
@@ -286,6 +291,13 @@ export class AgentOrc<HasLlm extends boolean = false> {
         createdAt: timestamp,
         updatedAt: timestamp,
       });
+      if (profile) {
+        const storeMs = performance.now() - tStore;
+        const totalMs = performance.now() - t0;
+        console.log(
+          `[profile] remember embed=${embedMs.toFixed(2)}ms store=${storeMs.toFixed(2)}ms total=${totalMs.toFixed(2)}ms backend=${storage.name}`,
+        );
+      }
       return toMemoryRecord(row);
     });
   }
@@ -308,77 +320,73 @@ export class AgentOrc<HasLlm extends boolean = false> {
     this.assertEmbeddingDimensions(vector.length);
 
     const hasFilters = Boolean(
-      options.filter?.agent ||
-        options.filter?.metadata ||
-        !options.filter?.includeArchived,
+      options.filter?.agent || options.filter?.metadata,
     );
     const overFetch =
-      this.retrievalConfig.overFetchFactor ?? 4;
+      this.retrievalConfig.overFetchFactor ?? (hasFilters ? 4 : 2);
     const fetchK = adaptiveFetchK(topK, overFetch, hasFilters);
-    const hits = await storage.searchVectors(vector, fetchK);
 
     const semanticScores = new Map<string, number>();
     const byId = new Map<string, RecallResult>();
 
-    for (const hit of hits) {
-      const row = await storage.getMemoryByRowid(hit.memoryRowid, organization);
-      if (!row) {
-        continue;
-      }
-      if (options.filter?.agent && row.agent !== options.filter.agent) {
-        continue;
-      }
-      if (!options.filter?.includeArchived && row.archived === 1) {
-        continue;
-      }
-      const metadata = deserializeMetadata(row.metadata_json);
-      if (
-        options.filter?.metadata &&
-        !matchesMetadata(metadata, options.filter.metadata)
-      ) {
-        continue;
-      }
-
-      const similarity = distanceToSimilarity(hit.distance);
-      if (similarity < threshold) {
-        continue;
-      }
-
-      const result = toRecallResult(row, similarity);
-      semanticScores.set(result.id, similarity);
-      byId.set(result.id, result);
-    }
-
-    const hybridWeights =
-      resolveHybridWeights(options.hybrid) ??
-      (options.hybrid === undefined && this.keywordSearch
-        ? resolveHybridWeights(this.retrievalConfig.hybrid ?? true)
-        : resolveHybridWeights(options.hybrid));
-
-    if (hybridWeights && this.keywordSearch) {
-      const corpus = await storage.listMemories(
+    const joined = storage.searchVectorsWithMemories;
+    if (typeof joined === "function") {
+      const joinedHits = await joined.call(
+        storage,
+        vector,
+        fetchK,
+        organization,
         {
-          organization,
           agent: options.filter?.agent,
           includeArchived: options.filter?.includeArchived,
-          metadata: options.filter?.metadata,
         },
-        Math.min(fetchK * 2, 2000),
       );
-      const keywordHits = await this.keywordSearch.search(
-        query,
-        corpus.map((row) => ({ id: row.id, text: row.content_text })),
-        fetchK,
-      );
-      const keywordScores = new Map(
-        keywordHits.map((h) => [h.memoryId, h.score]),
-      );
-
-      for (const row of corpus) {
-        if (byId.has(row.id)) {
+      for (const { row, distance } of joinedHits) {
+        if (
+          options.filter?.metadata &&
+          !matchesMetadata(
+            deserializeMetadata(row.metadata_json),
+            options.filter.metadata,
+          )
+        ) {
           continue;
         }
-        if (!keywordScores.has(row.id)) {
+        const similarity = distanceToSimilarity(distance);
+        if (similarity < threshold) {
+          continue;
+        }
+        const result = toRecallResult(row, similarity);
+        semanticScores.set(result.id, similarity);
+        byId.set(result.id, result);
+      }
+    } else {
+      const hits = await storage.searchVectors(vector, fetchK);
+      const rowids = hits.map((h) => h.memoryRowid);
+      let rowMap: Map<number, MemoryRow>;
+      if (typeof storage.getMemoriesByRowids === "function") {
+        rowMap = await storage.getMemoriesByRowids(rowids, organization);
+      } else {
+        rowMap = new Map();
+        const looked = await Promise.all(
+          hits.map(async (hit) => ({
+            hit,
+            row: await storage.getMemoryByRowid(hit.memoryRowid, organization),
+          })),
+        );
+        for (const { hit, row } of looked) {
+          if (row) rowMap.set(hit.memoryRowid, row);
+        }
+      }
+
+      for (const hit of hits) {
+        const row = rowMap.get(hit.memoryRowid);
+        if (!row) {
+          continue;
+        }
+        if (options.filter?.agent && row.agent !== options.filter.agent) {
+          continue;
+        }
+        if (!options.filter?.includeArchived && row.archived === 1) {
           continue;
         }
         const metadata = deserializeMetadata(row.metadata_json);
@@ -388,17 +396,111 @@ export class AgentOrc<HasLlm extends boolean = false> {
         ) {
           continue;
         }
-        if (!options.filter?.includeArchived && row.archived === 1) {
+
+        const similarity = distanceToSimilarity(hit.distance);
+        if (similarity < threshold) {
           continue;
         }
-        byId.set(row.id, toRecallResult(row, 0));
+
+        const result = toRecallResult(row, similarity);
+        semanticScores.set(result.id, similarity);
+        byId.set(result.id, result);
+      }
+    }
+
+    const hybridWeights =
+      resolveHybridWeights(options.hybrid) ??
+      (options.hybrid === undefined
+        ? resolveHybridWeights(this.retrievalConfig.hybrid)
+        : null);
+
+    if (hybridWeights) {
+      let keywordScores = new Map<string, number>();
+
+      if (typeof storage.searchKeyword === "function") {
+        const ftsHits = await storage.searchKeyword(
+          query,
+          organization,
+          fetchK,
+        );
+        keywordScores = new Map(
+          ftsHits.map((h) => [h.memoryId, h.score]),
+        );
+        const missingIds: string[] = [];
+        for (const id of keywordScores.keys()) {
+          if (!byId.has(id)) missingIds.push(id);
+        }
+        if (missingIds.length > 0) {
+          const fetched = await Promise.all(
+            missingIds.map((id) => storage.getMemoryById(id, organization)),
+          );
+          for (const row of fetched) {
+            if (!row) continue;
+            if (options.filter?.agent && row.agent !== options.filter.agent) {
+              continue;
+            }
+            if (!options.filter?.includeArchived && row.archived === 1) {
+              continue;
+            }
+            if (
+              options.filter?.metadata &&
+              !matchesMetadata(
+                deserializeMetadata(row.metadata_json),
+                options.filter.metadata,
+              )
+            ) {
+              continue;
+            }
+            byId.set(row.id, toRecallResult(row, 0));
+          }
+        }
+      } else if (this.keywordSearch) {
+        const corpus = await storage.listMemories(
+          {
+            organization,
+            agent: options.filter?.agent,
+            includeArchived: options.filter?.includeArchived,
+            metadata: options.filter?.metadata,
+          },
+          Math.min(fetchK * 2, 2000),
+        );
+        const keywordHits = await this.keywordSearch.search(
+          query,
+          corpus.map((row) => ({ id: row.id, text: row.content_text })),
+          fetchK,
+        );
+        keywordScores = new Map(
+          keywordHits.map((h) => [h.memoryId, h.score]),
+        );
+
+        for (const row of corpus) {
+          if (byId.has(row.id)) {
+            continue;
+          }
+          if (!keywordScores.has(row.id)) {
+            continue;
+          }
+          const metadata = deserializeMetadata(row.metadata_json);
+          if (
+            options.filter?.metadata &&
+            !matchesMetadata(metadata, options.filter.metadata)
+          ) {
+            continue;
+          }
+          if (!options.filter?.includeArchived && row.archived === 1) {
+            continue;
+          }
+          byId.set(row.id, toRecallResult(row, 0));
+        }
       }
 
-      const fused = fuseScores(semanticScores, keywordScores, hybridWeights);
-      for (const [id, score] of fused) {
-        const existing = byId.get(id);
-        if (existing) {
-          byId.set(id, { ...existing, similarity: score });
+      if (keywordScores.size > 0) {
+        const fused = fuseScores(semanticScores, keywordScores, hybridWeights);
+        for (const [id, score] of fused) {
+          const existing = byId.get(id);
+          if (existing) {
+            byId.set(id, { ...existing, similarity: score });
+          }
         }
       }
     }
@@ -442,7 +544,7 @@ export class AgentOrc<HasLlm extends boolean = false> {
    * Only available when `llm` (or `compression`) was configured at construction.
    */
   async compress(
-    this: AgentOrc<true>,
+    this: Wolbarg<true>,
     options: CompressOptions,
   ): Promise<CompressResult> {
     return this.runCompress(options);
@@ -485,7 +587,7 @@ export class AgentOrc<HasLlm extends boolean = false> {
     const summaryId = createId();
     const timestamp = nowIso();
 
-    return this.writeMutex.runExclusive(async () => {
+    return this.withWriteLock(async () => {
       const summaryRow = await storage.insertMemory({
         id: summaryId,
         organization,
@@ -616,7 +718,7 @@ export class AgentOrc<HasLlm extends boolean = false> {
       updatedAt: timestamp,
     }));
 
-    const rows = await this.writeMutex.runExclusive(async () => {
+    const rows = await this.withWriteLock(async () => {
       return storage.insertMemoriesBatch(inputs);
     });
 
@@ -633,7 +735,7 @@ export class AgentOrc<HasLlm extends boolean = false> {
   async forget(options: ForgetOptions): Promise<number> {
     const { storage, organization } = await this.requireReady();
 
-    return this.writeMutex.runExclusive(async () => {
+    return this.withWriteLock(async () => {
       if ("id" in options && options.id !== undefined) {
         assertNonEmptyString(options.id, "id");
         const deleted = await storage.deleteMemoryById(
@@ -683,6 +785,8 @@ export class AgentOrc<HasLlm extends boolean = false> {
 
     return {
       totalMemories: counts.totalMemories,
+      activeMemories: counts.activeMemories,
+      archivedMemories: counts.archivedMemories,
       totalAgents: counts.totalAgents,
       databaseSizeBytes,
       embeddingModel: embedding.model,
@@ -702,9 +806,20 @@ export class AgentOrc<HasLlm extends boolean = false> {
       );
     }
 
-    return this.writeMutex.runExclusive(async () => {
+    return this.withWriteLock(async () => {
       return storage.clearOrganization(organization);
     });
+  }
+
+  /**
+   * Serialize writes for SQLite (single connection). Postgres uses a pool and
+   * per-statement atomic CTEs — locking here only serializes throughput.
+   */
+  private withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.storage?.name === "sqlite") {
+      return this.writeMutex.runExclusive(fn);
+    }
+    return fn();
   }
 
   /** Close the database connection and release resources. */
@@ -735,7 +850,7 @@ export class AgentOrc<HasLlm extends boolean = false> {
       !this.organization
     ) {
       throw new InitializationError(
-        "AgentOrc is not initialized. Pass options to the constructor or call init().",
+        "Wolbarg is not initialized. Pass options to the constructor or call init().",
       );
     }
     return {

@@ -1,17 +1,15 @@
 {
-  "name": "agentorc",
-  "version": "0.2.0",
-  "description": "AgentOrc — modular, provider-agnostic semantic memory SDK for AI agents. SQLite + PostgreSQL, hybrid search, ingest, optional rerankers.",
+  "name": "wolbarg",
+  "version": "0.3.0",
+  "description": "Wolbarg — modular, provider-agnostic semantic memory SDK for AI agents. SQLite + PostgreSQL, hybrid search, ingest, optional rerankers.",
   "license": "MIT",
   "author": {
     "name": "Atharv Munde",
     "url": "https://github.com/Atharvmunde11"
   },
   "keywords": [
-    "agentorc",
-    "agentOrc",
-    "AgentOrc",
-    "agent-orc",
+    "wolbarg",
+    "Wolbarg",
     "ai",
     "agents",
     "ai-agents",
@@ -100,15 +98,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Atharvmunde11/agentOrc.git"
+    "url": "git+https://github.com/Atharvmunde11/wolbarg.git"
   },
   "bugs": {
-    "url": "https://github.com/Atharvmunde11/agentOrc/issues"
+    "url": "https://github.com/Atharvmunde11/wolbarg/issues"
   },
-  "homepage": "https://AgentOrc.lucareo.com",
+  "homepage": "https://wolbarg.com",
   "funding": {
     "type": "github",
-    "url": "https://github.com/Atharvmunde11/agentOrc"
+    "url": "https://github.com/Atharvmunde11/wolbarg"
   },
   "optionalDependencies": {
     "mammoth": "^1.12.0",

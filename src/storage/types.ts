@@ -1,5 +1,5 @@
 /**
- * Shared provider contracts for AgentOrc v0.2.
+ * Shared provider contracts for Wolbarg v0.2.
  */
 
 import type { MemoryMetadata } from "../types/index.js";
@@ -101,6 +101,15 @@ export interface StorageProvider {
   /** Fetch a memory by its integer rowid. */
   getMemoryByRowid(rowid: number, organization: string): Promise<MemoryRow | null>;
 
+  /**
+   * Batch fetch memories by rowids (one query). Optional — Wolbarg falls
+   * back to parallel getMemoryByRowid when absent.
+   */
+  getMemoriesByRowids?(
+    rowids: number[],
+    organization: string,
+  ): Promise<Map<number, MemoryRow>>;
+
   /** List memories matching a filter. */
   listMemories(filter: RepositoryFilter, limit?: number): Promise<MemoryRow[]>;
 
@@ -112,6 +121,26 @@ export interface StorageProvider {
 
   /** KNN search against the vector index. */
   searchVectors(embedding: Float32Array, topK: number): Promise<VectorSearchHit[]>;
+
+  /**
+   * Optional: KNN + memory rows in one round-trip, org-scoped.
+   */
+  searchVectorsWithMemories?(
+    embedding: Float32Array,
+    topK: number,
+    organization: string,
+    options?: { agent?: string; includeArchived?: boolean },
+  ): Promise<Array<{ row: MemoryRow; distance: number }>>;
+
+  /**
+   * Optional: native keyword / BM25 search (e.g. SQLite FTS5).
+   * When present, hybrid recall can skip loading the full corpus.
+   */
+  searchKeyword?(
+    query: string,
+    organization: string,
+    topK: number,
+  ): Promise<Array<{ memoryId: string; score: number }>>;
 
   /**
    * Soft-archive memories and record lineage linking them to a summary.
@@ -140,7 +169,12 @@ export interface StorageProvider {
   insertHistoryEvent(event: HistoryRow): Promise<void>;
 
   /** Count memories / distinct agents for an organization. */
-  getStats(organization: string): Promise<{ totalMemories: number; totalAgents: number }>;
+  getStats(organization: string): Promise<{
+    totalMemories: number;
+    activeMemories: number;
+    archivedMemories: number;
+    totalAgents: number;
+  }>;
 
   /** Approximate on-disk database size in bytes. */
   getDatabaseSizeBytes(): Promise<number>;

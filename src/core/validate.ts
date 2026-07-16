@@ -2,7 +2,7 @@
  * Configuration validation for SDK initialization and constructor options.
  */
 
-import type { AgentOrcOptions } from "./options.js";
+import type { WolbargOptions } from "./options.js";
 import type { EmbeddingConfig, InitOptions, LlmConfig } from "../types/index.js";
 import { ConfigurationError } from "../errors/index.js";
 import { isEmbeddingProvider, isLlmProvider, isStorageProvider } from "./options.js";
@@ -132,9 +132,9 @@ export function validateInitOptions(options: InitOptions): InitOptions {
   };
 }
 
-export function validateAgentOrcOptions(options: AgentOrcOptions): AgentOrcOptions {
+export function validateWolbargOptions(options: WolbargOptions): WolbargOptions {
   if (options === null || typeof options !== "object") {
-    throw new ConfigurationError("AgentOrc options must be an object");
+    throw new ConfigurationError("Wolbarg options must be an object");
   }
   assertNonEmpty(options.organization, "organization");
 

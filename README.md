@@ -1,15 +1,33 @@
-# agentOrc
+<p align="center">
+  <img src="./assets/wolbarg-banner.png" alt="Wolbarg Logo: Memory Infrastructure for AI Agents" width="720" />
+</p>
 
-**Modular, provider-agnostic semantic memory for AI agents (v0.2).**
+# Wolbarg
 
-[![npm version](https://img.shields.io/npm/v/agentorc.svg)](https://www.npmjs.com/package/agentorc)
+**Modular, provider-agnostic semantic memory for AI agents (v0.3.0).**
+
+[![npm version](https://img.shields.io/npm/v/wolbarg.svg)](https://www.npmjs.com/package/wolbarg)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Docs](https://img.shields.io/badge/docs-AgentOrc.lucareo.com-black)](https://AgentOrc.lucareo.com)
+[![Docs](https://img.shields.io/badge/docs-wolbarg.com-black)](https://wolbarg.com)
+[![Benchmarks](https://img.shields.io/badge/benchmarks-Storage%20suite-black)](https://wolbarg.com/benchmarks)
+
+## Benchmarks
+
+**v0.2.1 Storage suite** (mock embeddings · scale quick) — dual-backend SQLite + PostgreSQL:
+
+| Metric | Result |
+| --- | --- |
+| SQLite search @ 1k | **2.02 ms** |
+| SQLite insert @ 1k | **1.72k ops/sec** |
+| SQLite cold start | **7.91 ms** |
+| Postgres 16 writers | **1.12k ops/sec** |
+
+Storage (mock) ≠ LIVE (real providers). Full page: [wolbarg.com/benchmarks](https://wolbarg.com/benchmarks) · [methodology](https://wolbarg.com/docs/benchmarks) · [raw JSON](https://wolbarg.com/benchmarks/benchmark.json).
 
 ## Installation
 
 ```bash
-npm install agentorc
+npm install wolbarg
 ```
 
 Node.js **22.5+**.
@@ -28,21 +46,21 @@ Node.js **22.5+**.
 npm install pdf-parse@1.1.4 mammoth
 ```
 
-**Important:** these packages are **not** bundled with `agentorc`. If you call `ingest()` on PDF/DOCX without the matching peer, AgentOrc throws a configuration error at use time (not at import). Plain `.txt` / `.md` / `.csv` / `.json` need no extras.
+**Important:** these packages are **not** bundled with `Wolbarg`. If you call `ingest()` on PDF/DOCX without the matching peer, Wolbarg throws a configuration error at use time (not at import). Plain `.txt` / `.md` / `.csv` / `.json` need no extras.
 
 ## Quick start
 
 ```ts
 import {
-  AgentOrc,
+  Wolbarg,
   sqlite,
   openaiEmbedding,
   openaiLlm,
   bm25,
   meta,
-} from "agentorc";
+} from "wolbarg";
 
-const ctx = new AgentOrc({
+const ctx = new Wolbarg({
   organization: "my-org",
   storage: sqlite("./memory.db"),
   embedding: openaiEmbedding({
@@ -86,7 +104,7 @@ Calling `compress` without `llm` is a TypeScript error.
 | `forget` / `history` / `stats` / `clear` | Management |
 | `ready` / `close` | Lifecycle |
 
-Full documentation: [AgentOrc.lucareo.com](https://AgentOrc.lucareo.com/docs/introduction)
+Full documentation: [wolbarg.com](https://wolbarg.com/docs/introduction)
 
 ## Limitations (v0.2)
 
@@ -96,7 +114,7 @@ Full documentation: [AgentOrc.lucareo.com](https://AgentOrc.lucareo.com/docs/int
 - **Postgres** needs `pg`; `pgvector` is optional (falls back to byte embeddings + in-process distance).
 - **Not** an agent framework, chat UI, or hosted vector SaaS.
 
-See [Limitations (v0.2)](https://AgentOrc.lucareo.com/docs/guides/limitations) for the full list.
+See [Limitations (v0.2)](https://wolbarg.com/docs/guides/limitations) for the full list.
 
 ## Migration from 0.1
 

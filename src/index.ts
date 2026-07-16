@@ -1,10 +1,10 @@
 /**
- * agentOrc — local-first, model-agnostic semantic memory SDK for AI agents.
+ * Wolbarg — local-first, model-agnostic semantic memory SDK for AI agents.
  *
  * @packageDocumentation
  */
 
-export { AgentOrc } from "./core/agent-orc.js";
+export { Wolbarg } from "./core/wolbarg.js";
 
 export type {
   ClearOptions,
@@ -43,13 +43,13 @@ export type {
 } from "./types/index.js";
 
 export type {
-  AgentOrcOptions,
-  AgentOrcOptionsWithLlm,
-  AgentOrcOptionsWithoutLlm,
+  WolbargOptions,
+  WolbargOptionsWithLlm,
+  WolbargOptionsWithoutLlm,
 } from "./core/options.js";
 
 export {
-  AgentOrcError,
+  WolbargError,
   CompressionError,
   ConfigurationError,
   DatabaseError,

@@ -1,5 +1,5 @@
 /**
- * Constructor options for AgentOrc v0.2.
+ * Constructor options for Wolbarg v0.2.
  */
 
 import type { ChunkingStrategy } from "../chunking/index.js";
@@ -22,7 +22,7 @@ export type EmbeddingInput = EmbeddingProvider | EmbeddingConfig;
 export type LlmInput = LlmProvider | LlmConfig;
 export type StorageInput = StorageProvider | StorageConfig;
 
-export interface AgentOrcOptionsBase {
+export interface WolbargOptionsBase {
   /** Organization namespace isolating memories within a shared database. */
   organization: string;
   /** Storage provider instance or config. */
@@ -45,18 +45,18 @@ export interface AgentOrcOptionsBase {
   retrieval?: RetrievalConfig;
 }
 
-export interface AgentOrcOptionsWithoutLlm extends AgentOrcOptionsBase {
+export interface WolbargOptionsWithoutLlm extends WolbargOptionsBase {
   llm?: undefined;
 }
 
-export interface AgentOrcOptionsWithLlm extends AgentOrcOptionsBase {
+export interface WolbargOptionsWithLlm extends WolbargOptionsBase {
   /** Chat model used for compression. */
   llm: LlmInput;
 }
 
-export type AgentOrcOptions =
-  | AgentOrcOptionsWithoutLlm
-  | AgentOrcOptionsWithLlm;
+export type WolbargOptions =
+  | WolbargOptionsWithoutLlm
+  | WolbargOptionsWithLlm;
 
 export function isEmbeddingProvider(
   value: EmbeddingInput,

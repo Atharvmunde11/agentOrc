@@ -4,7 +4,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  AgentOrc,
+  Wolbarg,
   ProviderNotConfiguredError,
   bm25,
   createChunkingStrategy,
@@ -23,7 +23,7 @@ afterEach(() => {
 describe("constructor API", () => {
   it("works with storage + embedding factories (no llm)", async () => {
     installFetchMock();
-    const ctx = new AgentOrc({
+    const ctx = new Wolbarg({
       organization: "ctor-org",
       storage: sqlite(":memory:"),
       embedding: openaiEmbedding({
@@ -53,7 +53,7 @@ describe("constructor API", () => {
 
   it("enables compress when llm is configured", async () => {
     installFetchMock({ summaryText: "summary" });
-    const ctx = new AgentOrc({
+    const ctx = new Wolbarg({
       organization: "ctor-org",
       storage: sqlite(":memory:"),
       embedding: openaiEmbedding({
@@ -80,7 +80,7 @@ describe("constructor API", () => {
 describe("metadata filters", () => {
   it("filters recall by metadata eq", async () => {
     installFetchMock();
-    const ctx = new AgentOrc({
+    const ctx = new Wolbarg({
       organization: "meta-org",
       storage: sqlite(":memory:"),
       embedding: openaiEmbedding({
@@ -115,7 +115,7 @@ describe("metadata filters", () => {
 describe("hybrid search", () => {
   it("runs hybrid when keywordSearch is configured", async () => {
     installFetchMock();
-    const ctx = new AgentOrc({
+    const ctx = new Wolbarg({
       organization: "hybrid-org",
       storage: sqlite(":memory:"),
       embedding: openaiEmbedding({
@@ -205,7 +205,7 @@ describe("ingest", () => {
       }),
     );
 
-    const ctx = new AgentOrc({
+    const ctx = new Wolbarg({
       organization: "ingest-org",
       storage: sqlite(":memory:"),
       embedding: openaiEmbedding({
@@ -235,7 +235,7 @@ describe("ingest", () => {
 describe("rerank graceful skip", () => {
   it("skips rerank when provider is missing", async () => {
     installFetchMock();
-    const ctx = new AgentOrc({
+    const ctx = new Wolbarg({
       organization: "rerank-org",
       storage: sqlite(":memory:"),
       embedding: openaiEmbedding({

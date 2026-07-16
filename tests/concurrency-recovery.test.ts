@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AgentOrc } from "../src/index.js";
+import { Wolbarg } from "../src/index.js";
 import { baseInitOptions, installFetchMock } from "./helpers.js";
 
 describe("concurrency + crash recovery + empty database", () => {
@@ -13,7 +13,7 @@ describe("concurrency + crash recovery + empty database", () => {
 
   it("reports empty database stats", async () => {
     installFetchMock();
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await ctx.init(baseInitOptions());
     const stats = await ctx.stats();
     expect(stats.totalMemories).toBe(0);
@@ -24,7 +24,7 @@ describe("concurrency + crash recovery + empty database", () => {
 
   it("handles concurrent writes safely", async () => {
     installFetchMock();
-    const ctx = new AgentOrc();
+    const ctx = new Wolbarg();
     await ctx.init(baseInitOptions());
 
     const writes = Array.from({ length: 20 }, (_, i) =>
@@ -48,10 +48,10 @@ describe("concurrency + crash recovery + empty database", () => {
 
   it("recovers data after reopen (crash-safe WAL writes)", async () => {
     installFetchMock();
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentorc-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "Wolbarg-"));
     const dbPath = path.join(dir, "memory.db");
 
-    const ctx1 = new AgentOrc();
+    const ctx1 = new Wolbarg();
     await ctx1.init(
       baseInitOptions({
         database: { provider: "sqlite", connectionString: dbPath },
@@ -66,7 +66,7 @@ describe("concurrency + crash recovery + empty database", () => {
     await ctx1.close();
 
     // Simulate process restart
-    const ctx2 = new AgentOrc();
+    const ctx2 = new Wolbarg();
     await ctx2.init(
       baseInitOptions({
         database: { provider: "sqlite", connectionString: dbPath },

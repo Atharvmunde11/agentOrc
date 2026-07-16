@@ -1,5 +1,5 @@
 /**
- * Public configuration and domain types for AgentOrc v0.2.
+ * Public configuration and domain types for Wolbarg v0.2.
  */
 
 import type { MetadataFilter } from "../filters/types.js";
@@ -92,7 +92,7 @@ export interface MmrConfig {
   lambda?: number;
 }
 
-/** Retrieval pipeline defaults applied when constructing AgentOrc. */
+/** Retrieval pipeline defaults applied when constructing Wolbarg. */
 export interface RetrievalConfig {
   /** Default over-fetch multiplier for candidate generation. Defaults to 4. */
   overFetchFactor?: number;
@@ -120,7 +120,7 @@ export interface InitOptions {
   llm?: LlmConfig;
 }
 
-/** Input for {@link AgentOrc.remember}. */
+/** Input for {@link Wolbarg.remember}. */
 export interface RememberOptions {
   /** Agent identifier that owns this memory. */
   agent: string;
@@ -143,7 +143,7 @@ export interface MemoryFilter {
   metadata?: MetadataFilter;
 }
 
-/** Input for {@link AgentOrc.recall}. */
+/** Input for {@link Wolbarg.recall}. */
 export interface RecallOptions {
   /** Natural-language query to embed and search against. */
   query: string;
@@ -197,7 +197,7 @@ export interface MemoryRecord {
   updatedAt: Date;
 }
 
-/** Input for {@link AgentOrc.compress}. */
+/** Input for {@link Wolbarg.compress}. */
 export interface CompressOptions {
   /** Agent whose memories should be compressed. */
   agent: string;
@@ -228,10 +228,10 @@ export interface ForgetByFilterOptions {
   filter: MemoryFilter & { agent: string };
 }
 
-/** Input for {@link AgentOrc.forget}. */
+/** Input for {@link Wolbarg.forget}. */
 export type ForgetOptions = ForgetByIdOptions | ForgetByFilterOptions;
 
-/** Input for {@link AgentOrc.history}. */
+/** Input for {@link Wolbarg.history}. */
 export interface HistoryOptions {
   /** Memory ID whose lineage should be returned. */
   id: string;
@@ -252,7 +252,7 @@ export interface HistoryResult {
   events: HistoryEvent[];
 }
 
-/** Input for {@link AgentOrc.clear}. */
+/** Input for {@link Wolbarg.clear}. */
 export interface ClearOptions {
   /**
    * Must be `true` to confirm irreversible deletion of all memories
@@ -263,7 +263,15 @@ export interface ClearOptions {
 
 /** Aggregate statistics for the current organization. */
 export interface StatsResult {
+  /**
+   * Total memory rows including archived (historical) memories.
+   * Prefer {@link activeMemories} for “live set” size.
+   */
   totalMemories: number;
+  /** Non-archived memories currently eligible for recall / compression. */
+  activeMemories: number;
+  /** Soft-archived memories retained for lineage after compression. */
+  archivedMemories: number;
   totalAgents: number;
   databaseSizeBytes: number;
   embeddingModel: string;
@@ -273,7 +281,7 @@ export interface StatsResult {
   embeddingDimensions: number;
 }
 
-/** Supported document input for {@link AgentOrc.ingest}. */
+/** Supported document input for {@link Wolbarg.ingest}. */
 export interface IngestOptions {
   /** Agent that owns the ingested chunks. */
   agent: string;
