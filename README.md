@@ -4,7 +4,7 @@
 
 # Wolbarg
 
-**Modular, provider-agnostic semantic memory for AI agents (v0.3.0).**
+**Modular, provider-agnostic semantic memory for AI agents (v0.3.1).**
 
 [![npm version](https://img.shields.io/npm/v/wolbarg.svg)](https://www.npmjs.com/package/wolbarg)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)

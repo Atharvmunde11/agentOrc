@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] — 2026-07-17
+
+### Fixed
+
+- **Checkpoint rollback recovery** — a failed `rollback()` (e.g. missing checkpoint name) no longer leaves SQLite storage closed; the checkpoint is validated before close, and storage is reopened on error
+- **Import recovery** — a failed `import()` reopens storage the same way so the client stays usable after a bad export path
+
 ## [0.3.0] — 2026-07-17
 
 ### Added
@@ -113,6 +120,8 @@ const ctx = wolbarg({
 
 - Initial npm release path (pre–modular storage / ingest)
 
+[0.3.1]: https://github.com/Atharvmunde11/wolbarg/releases/tag/v0.3.1
+[0.3.0]: https://github.com/Atharvmunde11/wolbarg/releases/tag/v0.3.0
 [0.2.1]: https://github.com/Atharvmunde11/wolbarg/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Atharvmunde11/wolbarg/releases/tag/v0.2.0
 [0.1.1]: https://www.npmjs.com/package/wolbarg/v/0.1.1
