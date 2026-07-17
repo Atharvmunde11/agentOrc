@@ -1,8 +1,9 @@
 /**
- * Public configuration and domain types for Wolbarg v0.2.
+ * Public configuration and domain types for Wolbarg v0.3.
  */
 
 import type { MetadataFilter } from "../filters/types.js";
+import type { TelemetryConfig } from "../telemetry/types.js";
 
 /** Opaque, user-defined metadata. Never validated or modified by the SDK. */
 export type MemoryMetadata = Record<string, unknown>;
@@ -25,15 +26,20 @@ export interface SqliteDatabaseConfig {
   /**
    * Path to the SQLite database file, or `:memory:` for an in-memory database.
    * Relative paths are resolved from `process.cwd()`.
+   * Prefer `url` in v0.3; `connectionString` remains supported.
    */
-  connectionString: string;
+  connectionString?: string;
+  /** v0.3 preferred alias for the SQLite path / connection. */
+  url?: string;
 }
 
 /** PostgreSQL database configuration. */
 export interface PostgresDatabaseConfig {
   provider: "postgres";
   /** Postgres connection string (e.g. `postgres://user:pass@host:5432/db`). */
-  connectionString: string;
+  connectionString?: string;
+  /** v0.3 preferred alias for the Postgres connection string. */
+  url?: string;
   /** Optional max pool size. Defaults to 10. */
   maxPoolSize?: number;
 }
@@ -43,6 +49,8 @@ export type DatabaseConfig = SqliteDatabaseConfig | PostgresDatabaseConfig;
 
 /** Alias used by the constructor-based API. */
 export type StorageConfig = DatabaseConfig;
+
+export type { TelemetryConfig };
 
 /**
  * OpenAI-compatible embedding endpoint configuration.
@@ -168,6 +176,10 @@ export interface RecallOptions {
    * Falls back to semantic-only when keyword search is not configured.
    */
   hybrid?: boolean | HybridConfig;
+  /**
+   * When `true`, return enriched explain results instead of plain RecallResult[].
+   */
+  explain?: boolean;
 }
 
 /** A single recalled memory with similarity score. */
@@ -181,6 +193,59 @@ export interface RecallResult {
   similarity: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** Enriched recall hit when `explain: true`. */
+export interface RecallExplanationHit {
+  memory: RecallResult;
+  score: number;
+  distance: number;
+  rankingReason: string;
+  matchedFields: string[];
+  metadataMatch: boolean;
+  providerUsed: string;
+  searchTime: number;
+  rankingTime: number;
+}
+
+/** Full explain-mode response. */
+export interface RecallExplainResponse {
+  results: RecallExplanationHit[];
+  providerUsed: string;
+  searchTime: number;
+  rankingTime: number;
+  totalTime: number;
+  traceId: string;
+}
+
+/** Options for creating a named checkpoint. */
+export interface CheckpointOptions {
+  description?: string;
+}
+
+/** Checkpoint metadata returned by checkpoint APIs. */
+export interface CheckpointInfo {
+  name: string;
+  description: string | null;
+  createdAt: string;
+  sdkVersion: string;
+  provider: string;
+  snapshotPath: string;
+  sourcePath: string;
+  sizeBytes: number;
+}
+
+/** Result of export(). */
+export interface ExportResult {
+  path: string;
+  sizeBytes: number;
+  exportedAt: string;
+}
+
+/** Result of import(). */
+export interface ImportResult {
+  path: string;
+  importedAt: string;
 }
 
 /** Persisted memory record (without embedding vector). */

@@ -2,10 +2,26 @@
  * Configuration validation for SDK initialization and constructor options.
  */
 
-import type { WolbargOptions } from "./options.js";
-import type { EmbeddingConfig, InitOptions, LlmConfig } from "../types/index.js";
+import type {
+  WolbargOptions,
+  StorageInput,
+} from "./options.js";
+import {
+  isEmbeddingProvider,
+  isLlmProvider,
+  isStorageProvider,
+  isTelemetryProvider,
+  resolveDatabaseUrl,
+} from "./options.js";
+import type {
+  DatabaseConfig,
+  EmbeddingConfig,
+  InitOptions,
+  LlmConfig,
+  StorageConfig,
+  TelemetryConfig,
+} from "../types/index.js";
 import { ConfigurationError } from "../errors/index.js";
-import { isEmbeddingProvider, isLlmProvider, isStorageProvider } from "./options.js";
 
 function assertNonEmpty(value: unknown, fieldName: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -77,9 +93,78 @@ export function validateLlmConfig(config: LlmConfig): LlmConfig {
   };
 }
 
+export function normalizeDatabaseConfig(
+  config: DatabaseConfig | StorageConfig,
+): DatabaseConfig {
+  const provider = config.provider;
+  if (provider !== "sqlite" && provider !== "postgres") {
+    throw new ConfigurationError(
+      `Unsupported database provider "${String((config as { provider?: string }).provider)}". Supported: "sqlite", "postgres".`,
+    );
+  }
+  const connectionString = resolveDatabaseUrl(config).trim();
+  assertNonEmpty(connectionString, "database.url / database.connectionString");
+
+  if (provider === "postgres") {
+    return {
+      provider: "postgres",
+      connectionString,
+      url: connectionString,
+      ...("maxPoolSize" in config && config.maxPoolSize !== undefined
+        ? { maxPoolSize: config.maxPoolSize }
+        : {}),
+    };
+  }
+  return {
+    provider: "sqlite",
+    connectionString,
+    url: connectionString,
+  };
+}
+
+export function validateTelemetryConfig(config: TelemetryConfig): TelemetryConfig {
+  if (!config.database || typeof config.database !== "object") {
+    throw new ConfigurationError("telemetry.database is required when telemetry is enabled");
+  }
+  if (config.database.provider !== "sqlite") {
+    throw new ConfigurationError(
+      `Unsupported telemetry provider "${config.database.provider}". Only "sqlite" is implemented in v0.3.0; PostgreSQL will be added later without changing application code.`,
+      {
+        reason: `provider=${config.database.provider}`,
+        suggestion: 'Use telemetry: { database: { provider: "sqlite", url: "./telemetry.db" } }',
+      },
+    );
+  }
+  const url =
+    config.database.url?.trim() ||
+    config.database.connectionString?.trim() ||
+    "";
+  assertNonEmpty(url, "telemetry.database.url");
+
+  const level = config.level ?? "info";
+  const allowed = new Set(["off", "error", "warn", "info", "debug", "trace"]);
+  if (!allowed.has(level)) {
+    throw new ConfigurationError(`Invalid telemetry.level "${level}"`);
+  }
+
+  return {
+    enabled: config.enabled ?? true,
+    database: {
+      provider: "sqlite",
+      url,
+      connectionString: url,
+    },
+    level,
+    captureQueries: config.captureQueries ?? true,
+    captureLatency: config.captureLatency ?? true,
+    captureErrors: config.captureErrors ?? true,
+    captureSimilarity: config.captureSimilarity ?? true,
+    captureEmbeddings: config.captureEmbeddings ?? false,
+  };
+}
+
 /**
  * Validate and normalize init options (v0.1 compat).
- * LLM is optional in v0.2.
  */
 export function validateInitOptions(options: InitOptions): InitOptions {
   if (options === null || typeof options !== "object") {
@@ -92,17 +177,7 @@ export function validateInitOptions(options: InitOptions): InitOptions {
     throw new ConfigurationError("database configuration is required");
   }
 
-  const provider = options.database.provider;
-  if (provider !== "sqlite" && provider !== "postgres") {
-    throw new ConfigurationError(
-      `Unsupported database provider "${String((options.database as { provider?: string }).provider)}". Supported: "sqlite", "postgres".`,
-    );
-  }
-
-  assertNonEmpty(
-    options.database.connectionString,
-    "database.connectionString",
-  );
+  const database = normalizeDatabaseConfig(options.database);
 
   if (!options.embedding || typeof options.embedding !== "object") {
     throw new ConfigurationError("embedding configuration is required");
@@ -113,23 +188,23 @@ export function validateInitOptions(options: InitOptions): InitOptions {
 
   return {
     organization: options.organization.trim(),
-    database:
-      provider === "postgres"
-        ? {
-            provider: "postgres",
-            connectionString: options.database.connectionString.trim(),
-            ...("maxPoolSize" in options.database &&
-            options.database.maxPoolSize !== undefined
-              ? { maxPoolSize: options.database.maxPoolSize }
-              : {}),
-          }
-        : {
-            provider: "sqlite",
-            connectionString: options.database.connectionString.trim(),
-          },
+    database,
     embedding,
     ...(llm ? { llm } : {}),
   };
+}
+
+function resolveStorageInput(options: WolbargOptions): StorageInput {
+  if (options.storage && options.database) {
+    throw new ConfigurationError(
+      "Pass either storage or database, not both",
+    );
+  }
+  const input = options.storage ?? options.database;
+  if (!input) {
+    throw new ConfigurationError("storage or database is required");
+  }
+  return input;
 }
 
 export function validateWolbargOptions(options: WolbargOptions): WolbargOptions {
@@ -138,18 +213,10 @@ export function validateWolbargOptions(options: WolbargOptions): WolbargOptions 
   }
   assertNonEmpty(options.organization, "organization");
 
-  if (!options.storage) {
-    throw new ConfigurationError("storage is required");
-  }
-  if (!isStorageProvider(options.storage)) {
-    if (
-      typeof options.storage !== "object" ||
-      !("provider" in options.storage) ||
-      !("connectionString" in options.storage)
-    ) {
-      throw new ConfigurationError("storage must be a provider instance or config");
-    }
-    assertNonEmpty(options.storage.connectionString, "storage.connectionString");
+  const storageInput = resolveStorageInput(options);
+  let storage: StorageInput = storageInput;
+  if (!isStorageProvider(storageInput)) {
+    storage = normalizeDatabaseConfig(storageInput);
   }
 
   if (!options.embedding) {
@@ -163,8 +230,16 @@ export function validateWolbargOptions(options: WolbargOptions): WolbargOptions 
     validateLlmConfig(options.llm);
   }
 
+  let telemetry = options.telemetry;
+  if (telemetry && !isTelemetryProvider(telemetry)) {
+    telemetry = validateTelemetryConfig(telemetry);
+  }
+
   return {
     ...options,
     organization: options.organization.trim(),
+    storage,
+    database: undefined,
+    ...(telemetry ? { telemetry } : {}),
   };
 }

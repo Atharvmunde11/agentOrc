@@ -4,6 +4,7 @@
 
 import type { DatabaseConfig, StorageConfig } from "../types/index.js";
 import { ConfigurationError } from "../errors/index.js";
+import { resolveDatabaseUrl } from "../core/options.js";
 import type { StorageProvider } from "./types.js";
 import { SqliteStorageProvider } from "./providers/sqlite.js";
 import { PostgresStorageProvider } from "./providers/postgres.js";
@@ -11,15 +12,22 @@ import { PostgresStorageProvider } from "./providers/postgres.js";
 export function createStorageProvider(
   config: StorageConfig | DatabaseConfig,
 ): StorageProvider {
+  const connectionString = resolveDatabaseUrl(config);
+  if (!connectionString) {
+    throw new ConfigurationError(
+      "database.url or database.connectionString is required",
+    );
+  }
+
   if (config.provider === "sqlite") {
     return new SqliteStorageProvider({
-      connectionString: config.connectionString,
+      connectionString,
     });
   }
 
   if (config.provider === "postgres") {
     return new PostgresStorageProvider({
-      connectionString: config.connectionString,
+      connectionString,
       maxPoolSize: config.maxPoolSize,
     });
   }

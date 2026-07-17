@@ -105,6 +105,11 @@ export class SqliteStorageProvider implements StorageProvider {
     this.connectionString = options.connectionString;
   }
 
+  /** Absolute or relative path / `:memory:` used by this provider. */
+  get path(): string {
+    return this.connectionString;
+  }
+
   async open(): Promise<void> {
     try {
       const dbPath = this.resolvePath(this.connectionString);

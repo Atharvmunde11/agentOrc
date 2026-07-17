@@ -5,10 +5,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.3.0] — 2026-07-16
+## [0.3.0] — 2026-07-17
+
+### Added
+
+- **Telemetry system** — independent EventDatabase (never shares tables with memory). SQLite provider first; interface-ready for PostgreSQL.
+- **`wolbarg()` factory** plus `database.url` / `telemetry` configuration (additive; `storage` + `init()` still work)
+- **Trace system** — `session_id`, `trace_id`, `parent_trace_id` for waterfall debugging
+- **Telemetry schema v2** — additive organization, agent, tags, checkpoint, recall-explain, and stage-span fields with indexed queries and automatic v1 migration
+- **Recall explain mode** — `recall({ explain: true })` returns ranking diagnostics and timings
+- **Checkpoint API** — `checkpoint`, `rollback`, `deleteCheckpoint`, `listCheckpoints`, `getCheckpoint` (first-party SQLite snapshots, never overwrite)
+- **Import / export** — portable SQLite + manifest bundles
+- **Batch APIs** — `rememberBatch`, `recallBatch` with parent + child telemetry traces
+- **Actionable errors** — operation-scoped messages with reason + suggestion
+- **Internal benchmark helpers** — `runBenchmark` / `summarizeBenchmark`
+- **Wolbarg Studio** — separate Next.js app that reads telemetry databases (see `/wolbarg_studio`)
 
 ### Changed
 
+- **Telemetry instrumentation** — records available organization/agent/checkpoint context, persists real recall explanations, and reports measured pipeline stages without inventing recency signals
 - **Rebrand** — product renamed from AgentOrc / `agentorc` to **Wolbarg** / `wolbarg`
 - **API** — `AgentOrc` → `Wolbarg`, `AgentOrcOptions` → `WolbargOptions`, `AgentOrcError` → `WolbargError`
 - **Links** — docs and homepage now at [wolbarg.com](https://wolbarg.com); GitHub at [Atharvmunde11/wolbarg](https://github.com/Atharvmunde11/wolbarg)
@@ -22,9 +37,24 @@ npm install wolbarg
 ```
 
 ```ts
-import { Wolbarg, sqlite, openaiEmbedding } from "wolbarg";
-const ctx = new Wolbarg({ /* same options shape */ });
+import { wolbarg, openaiEmbedding } from "wolbarg";
+
+const ctx = wolbarg({
+  organization: "my-org",
+  database: { provider: "sqlite", url: "./memory.db" },
+  embedding: openaiEmbedding({
+    apiKey: process.env.OPENAI_API_KEY!,
+    model: "text-embedding-3-small",
+  }),
+  telemetry: {
+    enabled: true,
+    database: { provider: "sqlite", url: "./telemetry.db" },
+    level: "debug",
+  },
+});
 ```
+
+`new Wolbarg({ storage, embedding })` and `init({ database })` remain fully supported.
 
 ## [0.2.1] — 2026-07-15
 

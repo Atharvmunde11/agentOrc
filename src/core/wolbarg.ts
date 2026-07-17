@@ -1,21 +1,22 @@
 /**
- * Wolbarg — modular semantic memory SDK for AI agents (v0.2).
+ * Wolbarg — modular semantic memory SDK for AI agents (v0.3).
  *
  * @example
  * ```ts
- * import { Wolbarg, sqlite, openaiEmbedding, openaiLlm } from "wolbarg";
+ * import { wolbarg, openaiEmbedding, openaiLlm } from "wolbarg";
  *
- * const ctx = new Wolbarg({
+ * const ctx = wolbarg({
  *   organization: "my-org",
- *   storage: sqlite("./memory.db"),
+ *   database: { provider: "sqlite", url: "./memory.db" },
  *   embedding: openaiEmbedding({
  *     apiKey: process.env.OPENAI_API_KEY!,
  *     model: "text-embedding-3-small",
  *   }),
- *   llm: openaiLlm({
- *     apiKey: process.env.OPENAI_API_KEY!,
- *     model: "gpt-4.1-mini",
- *   }),
+ *   telemetry: {
+ *     enabled: true,
+ *     database: { provider: "sqlite", url: "./telemetry.db" },
+ *     level: "debug",
+ *   },
  * });
  *
  * await ctx.ready();
@@ -23,6 +24,8 @@
  * const hits = await ctx.recall({ query: "…", topK: 5 });
  * ```
  */
+
+import path from "node:path";
 
 import {
   createCompressionProvider,
@@ -39,10 +42,7 @@ import {
   type EmbeddingProvider,
 } from "../embedding/index.js";
 import { createLlmProvider, type LlmProvider } from "../llm/index.js";
-import {
-  loadIngestSource,
-  resolveParser,
-} from "../ingest/index.js";
+import { loadIngestSource, resolveParser } from "../ingest/index.js";
 import type { KeywordSearchProvider } from "../keyword/index.js";
 import type { OCRProvider } from "../ocr/index.js";
 import type { RerankerProvider } from "../rerank/index.js";
@@ -57,6 +57,11 @@ import {
   toRecallResult,
 } from "../memory/index.js";
 import {
+  SqliteMemoryTransferProvider,
+  type MemoryExportResult,
+  type MemoryImportResult,
+} from "../memory/transfer.js";
+import {
   adaptiveFetchK,
   applyMmr,
   fuseScores,
@@ -69,18 +74,25 @@ import {
   MemoryNotFoundError,
   ProviderNotConfiguredError,
   ValidationError,
+  wrapOperationError,
 } from "../errors/index.js";
 import type {
+  CheckpointInfo,
+  CheckpointOptions,
   ClearOptions,
   CompressOptions,
   CompressResult,
+  ExportResult,
   ForgetOptions,
   HistoryOptions,
   HistoryResult,
+  ImportResult,
   IngestOptions,
   IngestResult,
   InitOptions,
   MemoryRecord,
+  RecallExplainResponse,
+  RecallExplanationHit,
   RecallOptions,
   RecallResult,
   RememberOptions,
@@ -105,8 +117,18 @@ import {
   isEmbeddingProvider,
   isLlmProvider,
   isStorageProvider,
+  isTelemetryProvider,
+  resolveDatabaseUrl,
 } from "./options.js";
 import { validateWolbargOptions, validateInitOptions } from "./validate.js";
+import {
+  TelemetryEmitter,
+} from "../telemetry/index.js";
+import type { PersistedRecallExplainPayload } from "../telemetry/index.js";
+import type { CheckpointProvider } from "../providers/interfaces/CheckpointProvider.js";
+import { SqliteTelemetryProvider } from "../providers/sqlite/sqliteTelemetryProvider.js";
+import { SqliteCheckpointProvider } from "../providers/sqlite/sqliteCheckpointProvider.js";
+import { SqliteStorageProvider } from "../storage/providers/sqlite.js";
 
 type ReadyState = {
   storage: StorageProvider;
@@ -115,7 +137,6 @@ type ReadyState = {
 };
 
 export class Wolbarg<HasLlm extends boolean = false> {
-  /** Compile-time capability flag — `true` when constructed with `llm`. */
   declare readonly __hasLlm: HasLlm;
 
   private initialized = false;
@@ -133,27 +154,34 @@ export class Wolbarg<HasLlm extends boolean = false> {
   private retrievalConfig: RetrievalConfig = {};
   private embeddingDimensions: number | null = null;
   private readonly writeMutex = new AsyncMutex();
+  private telemetry: TelemetryEmitter;
+  private checkpointProvider: CheckpointProvider | null = null;
+  private memoryDbPath: string | null = null;
+  private readonly transfer = new SqliteMemoryTransferProvider();
 
-  /**
-   * Create an Wolbarg instance.
-   * When options are provided, providers are wired immediately and
-   * storage opens lazily on the first API call (or {@link ready}).
-   *
-   * Pass `llm` to enable {@link compress} (typed at compile time).
-   */
   constructor(options: WolbargOptionsWithLlm);
   constructor(options: WolbargOptionsWithoutLlm);
   constructor();
   constructor(options?: WolbargOptions) {
+    this.telemetry = new TelemetryEmitter(null, { enabled: false, level: "off" });
+
     if (!options) {
       return;
     }
 
     const validated = validateWolbargOptions(options);
     this.organization = validated.organization;
-    this.storage = isStorageProvider(validated.storage)
-      ? validated.storage
-      : createStorageProvider(validated.storage);
+    const storageInput = validated.storage!;
+    this.storage = isStorageProvider(storageInput)
+      ? storageInput
+      : createStorageProvider(storageInput);
+
+    if (!isStorageProvider(storageInput)) {
+      this.memoryDbPath = resolveDatabaseUrl(storageInput);
+    } else if (storageInput instanceof SqliteStorageProvider) {
+      this.memoryDbPath = storageInput.path;
+    }
+
     this.embedding = isEmbeddingProvider(validated.embedding)
       ? validated.embedding
       : createEmbeddingProvider(validated.embedding);
@@ -174,11 +202,33 @@ export class Wolbarg<HasLlm extends boolean = false> {
     this.vision = validated.vision ?? null;
     this.chunking = validated.chunking ?? null;
     this.retrievalConfig = validated.retrieval ?? {};
+
+    if (validated.telemetry) {
+      if (isTelemetryProvider(validated.telemetry)) {
+        this.telemetry = new TelemetryEmitter(validated.telemetry, {
+          enabled: true,
+        }, { organization: validated.organization });
+      } else {
+        const url =
+          validated.telemetry.database.url ??
+          validated.telemetry.database.connectionString ??
+          "";
+        const provider = new SqliteTelemetryProvider({ url });
+        this.telemetry = new TelemetryEmitter(provider, validated.telemetry, {
+          organization: validated.organization,
+        });
+      }
+    }
+
+    this.checkpointProvider =
+      validated.checkpoint ??
+      new SqliteCheckpointProvider({
+        directory: validated.checkpointDirectory,
+      });
   }
 
   /**
    * Backwards-compatible initialization (v0.1 API).
-   * Prefer the constructor with `storage` / `embedding` / optional `llm`.
    */
   async init(options: InitOptions): Promise<void> {
     if (this.initialized || this.storage) {
@@ -200,16 +250,20 @@ export class Wolbarg<HasLlm extends boolean = false> {
 
     this.organization = validated.organization;
     this.storage = createStorageProvider(validated.database);
+    this.memoryDbPath = resolveDatabaseUrl(validated.database);
     this.embedding = createEmbeddingProvider(validated.embedding);
     if (validated.llm) {
       this.llm = createLlmProvider(validated.llm);
       this.compression = createCompressionProvider(this.llm);
     }
+    if (!this.checkpointProvider) {
+      this.checkpointProvider = new SqliteCheckpointProvider();
+    }
 
     await this.ready();
   }
 
-  /** Ensure storage is open and embedding dimensions are known. */
+  /** Ensure storage (and optional telemetry) are open. */
   async ready(): Promise<void> {
     if (this.initialized) {
       return;
@@ -235,12 +289,16 @@ export class Wolbarg<HasLlm extends boolean = false> {
 
     try {
       await this.storage.open();
+      await this.telemetry.open();
+      await this.checkpointProvider?.open();
       const probe = await this.embedding.validate();
       await this.storage.ensureVectorSchema(probe.dimensions);
       this.embeddingDimensions = probe.dimensions;
       this.initialized = true;
+      this.telemetry.emitStartup(this.storage.name);
     } catch (error) {
       await this.storage.close().catch(() => undefined);
+      await this.telemetry.close().catch(() => undefined);
       this.initialized = false;
       if (
         error instanceof ConfigurationError ||
@@ -258,228 +316,232 @@ export class Wolbarg<HasLlm extends boolean = false> {
 
   /** Store a semantic memory for an agent. */
   async remember(options: RememberOptions): Promise<MemoryRecord> {
-    const { storage, embedding, organization } = await this.requireReady();
-    assertNonEmptyString(options.agent, "agent");
-    if (!options.content || typeof options.content.text !== "string") {
-      throw new ValidationError("content.text must be a string");
-    }
-    assertNonEmptyString(options.content.text, "content.text");
+    const trace = this.telemetry.start("remember");
+    try {
+      const { storage, embedding, organization } = await this.requireReady();
+      assertNonEmptyString(options.agent, "agent");
+      if (!options.content || typeof options.content.text !== "string") {
+        throw new ValidationError("content.text must be a string");
+      }
+      assertNonEmptyString(options.content.text, "content.text");
 
-    const metadata = options.metadata ?? {};
-    if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
-      throw new ValidationError("metadata must be a plain object when provided");
-    }
+      const metadata = options.metadata ?? {};
+      if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
+        throw new ValidationError("metadata must be a plain object when provided");
+      }
 
-    const profile = process.env.WOLBARG_PROFILE === "1";
-    const t0 = profile ? performance.now() : 0;
-    const vector = await embedding.embed(options.content.text);
-    const embedMs = profile ? performance.now() - t0 : 0;
-    this.assertEmbeddingDimensions(vector.length);
+      const tEmbed = performance.now();
+      const vector = await embedding.embed(options.content.text);
+      trace.mark("embeddingMs", performance.now() - tEmbed);
+      this.assertEmbeddingDimensions(vector.length);
 
-    const id = createId();
-    const timestamp = nowIso();
+      const id = createId();
+      const timestamp = nowIso();
 
-    return this.withWriteLock(async () => {
-      const tStore = profile ? performance.now() : 0;
-      const row = await storage.insertMemory({
-        id,
-        organization,
-        agent: options.agent.trim(),
-        contentText: options.content.text,
+      const record = await this.withWriteLock(async () => {
+        const tStore = performance.now();
+        const row = await storage.insertMemory({
+          id,
+          organization,
+          agent: options.agent.trim(),
+          contentText: options.content.text,
+          metadata,
+          embedding: vector,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+        trace.mark("databaseWriteMs", performance.now() - tStore);
+        return toMemoryRecord(row);
+      });
+
+      trace.success({
+        provider: storage.name,
+        memoryIds: [record.id],
+        returnedCount: 1,
+        embeddingProvider: embedding.model,
+        model: embedding.model,
         metadata,
-        embedding: vector,
+        agentId: options.agent.trim(),
+        tags: telemetryTags(metadata),
+      });
+      return record;
+    } catch (error) {
+      trace.failure(error, { agentId: options.agent });
+      throw wrapOperationError("remember", error);
+    }
+  }
+
+  /** Batch remember — one parent event + child traces per item. */
+  async rememberBatch(items: RememberOptions[]): Promise<MemoryRecord[]> {
+    const parent = this.telemetry.start("rememberBatch");
+    try {
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new ValidationError("rememberBatch requires a non-empty array");
+      }
+      const { storage, embedding, organization } = await this.requireReady();
+
+      const tEmbed = performance.now();
+      const texts = items.map((item, i) => {
+        assertNonEmptyString(item.agent, `items[${i}].agent`);
+        if (!item.content || typeof item.content.text !== "string") {
+          throw new ValidationError(`items[${i}].content.text must be a string`);
+        }
+        assertNonEmptyString(item.content.text, `items[${i}].content.text`);
+        return item.content.text;
+      });
+      const vectors = await embedMany(embedding, texts);
+      parent.mark("embeddingMs", performance.now() - tEmbed);
+      for (const vector of vectors) {
+        this.assertEmbeddingDimensions(vector.length);
+      }
+
+      const timestamp = nowIso();
+      const inputs = items.map((item, i) => ({
+        id: createId(),
+        organization,
+        agent: item.agent.trim(),
+        contentText: item.content.text,
+        metadata: item.metadata ?? {},
+        embedding: vectors[i]!,
         createdAt: timestamp,
         updatedAt: timestamp,
-      });
-      if (profile) {
-        const storeMs = performance.now() - tStore;
-        const totalMs = performance.now() - t0;
-        console.log(
-          `[profile] remember embed=${embedMs.toFixed(2)}ms store=${storeMs.toFixed(2)}ms total=${totalMs.toFixed(2)}ms backend=${storage.name}`,
-        );
+      }));
+
+      // Emit child traces for waterfall debugging.
+      for (let i = 0; i < inputs.length; i += 1) {
+        const child = parent.child("remember");
+        child.success({
+          provider: storage.name,
+          memoryIds: [inputs[i]!.id],
+          returnedCount: 1,
+          metadata: inputs[i]!.metadata,
+          agentId: inputs[i]!.agent,
+          tags: telemetryTags(inputs[i]!.metadata),
+        });
       }
-      return toMemoryRecord(row);
-    });
+
+      const rows = await this.withWriteLock(async () => {
+        const tStore = performance.now();
+        const result = await storage.insertMemoriesBatch(inputs);
+        parent.mark("databaseWriteMs", performance.now() - tStore);
+        return result;
+      });
+
+      const records = rows.map(toMemoryRecord);
+      parent.success({
+        provider: storage.name,
+        memoryIds: records.map((r) => r.id),
+        returnedCount: records.length,
+        embeddingProvider: embedding.model,
+        model: embedding.model,
+        agentId: commonAgent(items.map((item) => item.agent.trim())),
+      });
+      return records;
+    } catch (error) {
+      parent.failure(error);
+      throw wrapOperationError("rememberBatch", error);
+    }
   }
 
   /**
    * Semantic / hybrid search over stored memories.
-   * Optional keyword, metadata, MMR, and rerank stages degrade gracefully.
+   * Pass `{ explain: true }` for enriched ranking diagnostics.
    */
-  async recall(options: RecallOptions): Promise<RecallResult[]> {
-    const { storage, embedding, organization } = await this.requireReady();
-    assertNonEmptyString(options.query, "query");
+  async recall(options: RecallOptions & { explain: true }): Promise<RecallExplainResponse>;
+  async recall(options: RecallOptions & { explain?: false }): Promise<RecallResult[]>;
+  async recall(options: RecallOptions): Promise<RecallResult[] | RecallExplainResponse>;
+  async recall(options: RecallOptions): Promise<RecallResult[] | RecallExplainResponse> {
+    const trace = this.telemetry.start("recall");
+    const explain = options.explain === true;
+    try {
+      const { storage, embedding, organization } = await this.requireReady();
+      assertNonEmptyString(options.query, "query");
 
-    const topK = options.topK ?? 5;
-    const threshold = options.threshold ?? 0;
-    assertFiniteNumber(topK, "topK", { min: 1, max: 1000 });
-    assertFiniteNumber(threshold, "threshold", { min: 0, max: 1 });
+      const topK = options.topK ?? 5;
+      const threshold = options.threshold ?? 0;
+      assertFiniteNumber(topK, "topK", { min: 1, max: 1000 });
+      assertFiniteNumber(threshold, "threshold", { min: 0, max: 1 });
 
-    const query = options.query.trim();
-    const vector = await embedding.embed(query);
-    this.assertEmbeddingDimensions(vector.length);
+      const query = options.query.trim();
+      const tEmbed = performance.now();
+      const vector = await embedding.embed(query);
+      trace.mark("embeddingMs", performance.now() - tEmbed);
+      this.assertEmbeddingDimensions(vector.length);
 
-    const hasFilters = Boolean(
-      options.filter?.agent || options.filter?.metadata,
-    );
-    const overFetch =
-      this.retrievalConfig.overFetchFactor ?? (hasFilters ? 4 : 2);
-    const fetchK = adaptiveFetchK(topK, overFetch, hasFilters);
-
-    const semanticScores = new Map<string, number>();
-    const byId = new Map<string, RecallResult>();
-
-    const joined = storage.searchVectorsWithMemories;
-    if (typeof joined === "function") {
-      const joinedHits = await joined.call(
-        storage,
-        vector,
-        fetchK,
-        organization,
-        {
-          agent: options.filter?.agent,
-          includeArchived: options.filter?.includeArchived,
-        },
+      const hasFilters = Boolean(
+        options.filter?.agent || options.filter?.metadata,
       );
-      for (const { row, distance } of joinedHits) {
-        if (
-          options.filter?.metadata &&
-          !matchesMetadata(
-            deserializeMetadata(row.metadata_json),
-            options.filter.metadata,
-          )
-        ) {
-          continue;
-        }
-        const similarity = distanceToSimilarity(distance);
-        if (similarity < threshold) {
-          continue;
-        }
-        const result = toRecallResult(row, similarity);
-        semanticScores.set(result.id, similarity);
-        byId.set(result.id, result);
-      }
-    } else {
-      const hits = await storage.searchVectors(vector, fetchK);
-      const rowids = hits.map((h) => h.memoryRowid);
-      let rowMap: Map<number, MemoryRow>;
-      if (typeof storage.getMemoriesByRowids === "function") {
-        rowMap = await storage.getMemoriesByRowids(rowids, organization);
-      } else {
-        rowMap = new Map();
-        const looked = await Promise.all(
-          hits.map(async (hit) => ({
-            hit,
-            row: await storage.getMemoryByRowid(hit.memoryRowid, organization),
-          })),
-        );
-        for (const { hit, row } of looked) {
-          if (row) rowMap.set(hit.memoryRowid, row);
-        }
-      }
+      const overFetch =
+        this.retrievalConfig.overFetchFactor ?? (hasFilters ? 4 : 2);
+      const fetchK = adaptiveFetchK(topK, overFetch, hasFilters);
 
-      for (const hit of hits) {
-        const row = rowMap.get(hit.memoryRowid);
-        if (!row) {
-          continue;
-        }
-        if (options.filter?.agent && row.agent !== options.filter.agent) {
-          continue;
-        }
-        if (!options.filter?.includeArchived && row.archived === 1) {
-          continue;
-        }
-        const metadata = deserializeMetadata(row.metadata_json);
-        if (
-          options.filter?.metadata &&
-          !matchesMetadata(metadata, options.filter.metadata)
-        ) {
-          continue;
-        }
+      const semanticScores = new Map<string, number>();
+      const distances = new Map<string, number>();
+      const byId = new Map<string, RecallResult>();
+      const metadataMatched = new Map<string, boolean>();
 
-        const similarity = distanceToSimilarity(hit.distance);
-        if (similarity < threshold) {
-          continue;
-        }
-
-        const result = toRecallResult(row, similarity);
-        semanticScores.set(result.id, similarity);
-        byId.set(result.id, result);
-      }
-    }
-
-    const hybridWeights =
-      resolveHybridWeights(options.hybrid) ??
-      (options.hybrid === undefined
-        ? resolveHybridWeights(this.retrievalConfig.hybrid)
-        : null);
-
-    if (hybridWeights) {
-      let keywordScores = new Map<string, number>();
-
-      if (typeof storage.searchKeyword === "function") {
-        const ftsHits = await storage.searchKeyword(
-          query,
-          organization,
+      const tSearch = performance.now();
+      const joined = storage.searchVectorsWithMemories;
+      if (typeof joined === "function") {
+        const joinedHits = await joined.call(
+          storage,
+          vector,
           fetchK,
-        );
-        keywordScores = new Map(
-          ftsHits.map((h) => [h.memoryId, h.score]),
-        );
-        const missingIds: string[] = [];
-        for (const id of keywordScores.keys()) {
-          if (!byId.has(id)) missingIds.push(id);
-        }
-        if (missingIds.length > 0) {
-          const fetched = await Promise.all(
-            missingIds.map((id) => storage.getMemoryById(id, organization)),
-          );
-          for (const row of fetched) {
-            if (!row) continue;
-            if (options.filter?.agent && row.agent !== options.filter.agent) {
-              continue;
-            }
-            if (!options.filter?.includeArchived && row.archived === 1) {
-              continue;
-            }
-            if (
-              options.filter?.metadata &&
-              !matchesMetadata(
-                deserializeMetadata(row.metadata_json),
-                options.filter.metadata,
-              )
-            ) {
-              continue;
-            }
-            byId.set(row.id, toRecallResult(row, 0));
-          }
-        }
-      } else if (this.keywordSearch) {
-        const corpus = await storage.listMemories(
+          organization,
           {
-            organization,
             agent: options.filter?.agent,
             includeArchived: options.filter?.includeArchived,
-            metadata: options.filter?.metadata,
           },
-          Math.min(fetchK * 2, 2000),
         );
-        const keywordHits = await this.keywordSearch.search(
-          query,
-          corpus.map((row) => ({ id: row.id, text: row.content_text })),
-          fetchK,
-        );
-        keywordScores = new Map(
-          keywordHits.map((h) => [h.memoryId, h.score]),
-        );
+        const tFilter = performance.now();
+        for (const { row, distance } of joinedHits) {
+          let metaOk = true;
+          if (
+            options.filter?.metadata &&
+            !matchesMetadata(
+              deserializeMetadata(row.metadata_json),
+              options.filter.metadata,
+            )
+          ) {
+            metaOk = false;
+            continue;
+          }
+          const similarity = distanceToSimilarity(distance);
+          if (similarity < threshold) {
+            continue;
+          }
+          const result = toRecallResult(row, similarity);
+          semanticScores.set(result.id, similarity);
+          distances.set(result.id, distance);
+          metadataMatched.set(result.id, metaOk);
+          byId.set(result.id, result);
+        }
+        trace.mark("metadataFilteringMs", performance.now() - tFilter);
+      } else {
+        const hits = await storage.searchVectors(vector, fetchK);
+        const rowids = hits.map((h) => h.memoryRowid);
+        let rowMap: Map<number, MemoryRow>;
+        if (typeof storage.getMemoriesByRowids === "function") {
+          rowMap = await storage.getMemoriesByRowids(rowids, organization);
+        } else {
+          rowMap = new Map();
+          const looked = await Promise.all(
+            hits.map(async (hit) => ({
+              hit,
+              row: await storage.getMemoryByRowid(hit.memoryRowid, organization),
+            })),
+          );
+          for (const { hit, row } of looked) {
+            if (row) rowMap.set(hit.memoryRowid, row);
+          }
+        }
 
-        for (const row of corpus) {
-          if (byId.has(row.id)) {
-            continue;
-          }
-          if (!keywordScores.has(row.id)) {
-            continue;
-          }
+        const tFilter = performance.now();
+        for (const hit of hits) {
+          const row = rowMap.get(hit.memoryRowid);
+          if (!row) continue;
+          if (options.filter?.agent && row.agent !== options.filter.agent) continue;
+          if (!options.filter?.includeArchived && row.archived === 1) continue;
           const metadata = deserializeMetadata(row.metadata_json);
           if (
             options.filter?.metadata &&
@@ -487,62 +549,268 @@ export class Wolbarg<HasLlm extends boolean = false> {
           ) {
             continue;
           }
-          if (!options.filter?.includeArchived && row.archived === 1) {
-            continue;
+          const similarity = distanceToSimilarity(hit.distance);
+          if (similarity < threshold) continue;
+          const result = toRecallResult(row, similarity);
+          semanticScores.set(result.id, similarity);
+          distances.set(result.id, hit.distance);
+          metadataMatched.set(result.id, true);
+          byId.set(result.id, result);
+        }
+        trace.mark("metadataFilteringMs", performance.now() - tFilter);
+      }
+      const searchTime = performance.now() - tSearch;
+      trace.mark("vectorSearchMs", searchTime);
+      trace.mark("databaseReadMs", searchTime);
+
+      const hybridWeights =
+        resolveHybridWeights(options.hybrid) ??
+        (options.hybrid === undefined
+          ? resolveHybridWeights(this.retrievalConfig.hybrid)
+          : null);
+      let keywordSignal: "enabled" | "disabled" | "unknown" = "disabled";
+
+      if (hybridWeights) {
+        let keywordScores = new Map<string, number>();
+
+        if (typeof storage.searchKeyword === "function") {
+          keywordSignal = "enabled";
+          const ftsHits = await storage.searchKeyword(
+            query,
+            organization,
+            fetchK,
+          );
+          keywordScores = new Map(ftsHits.map((h) => [h.memoryId, h.score]));
+          const missingIds: string[] = [];
+          for (const id of keywordScores.keys()) {
+            if (!byId.has(id)) missingIds.push(id);
           }
-          byId.set(row.id, toRecallResult(row, 0));
+          if (missingIds.length > 0) {
+            const fetched = await Promise.all(
+              missingIds.map((id) => storage.getMemoryById(id, organization)),
+            );
+            for (const row of fetched) {
+              if (!row) continue;
+              if (options.filter?.agent && row.agent !== options.filter.agent) {
+                continue;
+              }
+              if (!options.filter?.includeArchived && row.archived === 1) {
+                continue;
+              }
+              if (
+                options.filter?.metadata &&
+                !matchesMetadata(
+                  deserializeMetadata(row.metadata_json),
+                  options.filter.metadata,
+                )
+              ) {
+                continue;
+              }
+              byId.set(row.id, toRecallResult(row, 0));
+              metadataMatched.set(row.id, true);
+            }
+          }
+        } else if (this.keywordSearch) {
+          keywordSignal = "enabled";
+          const corpus = await storage.listMemories(
+            {
+              organization,
+              agent: options.filter?.agent,
+              includeArchived: options.filter?.includeArchived,
+              metadata: options.filter?.metadata,
+            },
+            Math.min(fetchK * 2, 2000),
+          );
+          const keywordHits = await this.keywordSearch.search(
+            query,
+            corpus.map((row) => ({ id: row.id, text: row.content_text })),
+            fetchK,
+          );
+          keywordScores = new Map(
+            keywordHits.map((h) => [h.memoryId, h.score]),
+          );
+          for (const row of corpus) {
+            if (byId.has(row.id) || !keywordScores.has(row.id)) continue;
+            byId.set(row.id, toRecallResult(row, 0));
+            metadataMatched.set(row.id, true);
+          }
+        }
+
+        if (keywordScores.size > 0) {
+          const fused = fuseScores(semanticScores, keywordScores, hybridWeights);
+          for (const [id, score] of fused) {
+            const existing = byId.get(id);
+            if (existing) {
+              byId.set(id, { ...existing, similarity: score });
+            }
+          }
         }
       }
 
-      if (keywordScores.size > 0) {
-        const fused = fuseScores(semanticScores, keywordScores, hybridWeights);
-        for (const [id, score] of fused) {
-          const existing = byId.get(id);
-          if (existing) {
-            byId.set(id, { ...existing, similarity: score });
-          }
-        }
-      }
-    }
-
-    let results = [...byId.values()].sort(
-      (a, b) => b.similarity - a.similarity,
-    );
-
-    const mmrLambda =
-      resolveMmr(options.mmr) ??
-      resolveMmr(
-        this.retrievalConfig.mmr
-          ? { lambda: this.retrievalConfig.mmr.lambda }
-          : undefined,
+      const tRank = performance.now();
+      let results = [...byId.values()].sort(
+        (a, b) => b.similarity - a.similarity,
       );
-    if (mmrLambda !== null) {
-      results = applyMmr(results, Math.max(topK * 2, topK), mmrLambda);
-    }
 
-    if (options.rerank && this.reranker) {
-      const reranked = await this.reranker.rerank(
+      const mmrLambda =
+        resolveMmr(options.mmr) ??
+        resolveMmr(
+          this.retrievalConfig.mmr
+            ? { lambda: this.retrievalConfig.mmr.lambda }
+            : undefined,
+        );
+      let rankingReason = "cosine similarity";
+      if (mmrLambda !== null) {
+        results = applyMmr(results, Math.max(topK * 2, topK), mmrLambda);
+        rankingReason = `MMR(lambda=${mmrLambda})`;
+      }
+
+      if (options.rerank && this.reranker) {
+        const reranked = await this.reranker.rerank(
+          query,
+          results.map((r) => ({ id: r.id, text: r.content.text })),
+          topK,
+        );
+        const order = new Map(
+          reranked.map((r, i) => [r.id, { score: r.score, i }]),
+        );
+        results = results
+          .filter((r) => order.has(r.id))
+          .sort((a, b) => order.get(a.id)!.i - order.get(b.id)!.i)
+          .map((r) => ({
+            ...r,
+            similarity: order.get(r.id)?.score ?? r.similarity,
+          }));
+        rankingReason = `reranker:${(this.reranker as { name?: string }).name ?? "custom"}`;
+      }
+
+      const rankingTime = performance.now() - tRank;
+      trace.mark("rankingMs", rankingTime);
+      results = results.slice(0, topK);
+
+      const tSer = performance.now();
+      // Materialize final payload (serialization stage).
+      const serialized = results.map((r) => ({ ...r }));
+      trace.mark("serializationMs", performance.now() - tSer);
+
+      const telemetryFields = {
+        provider: storage.name,
         query,
-        results.map((r) => ({ id: r.id, text: r.content.text })),
-        topK,
-      );
-      const order = new Map(reranked.map((r, i) => [r.id, { score: r.score, i }]));
-      results = results
-        .filter((r) => order.has(r.id))
-        .sort((a, b) => (order.get(a.id)!.i) - (order.get(b.id)!.i))
-        .map((r) => ({
-          ...r,
-          similarity: order.get(r.id)?.score ?? r.similarity,
-        }));
-    }
+        filters: options.filter ?? null,
+        returnedCount: serialized.length,
+        memoryIds: serialized.map((r) => r.id),
+        similarityScores: serialized.map((r) => r.similarity),
+        embeddingProvider: embedding.model,
+        model: embedding.model,
+        agentId:
+          options.filter?.agent ??
+          commonAgent(serialized.map((result) => result.agent)),
+        tags: commonTags(serialized.map((result) => result.metadata)),
+      };
 
-    return results.slice(0, topK);
+      if (!explain) {
+        trace.success(telemetryFields);
+        return serialized;
+      }
+
+      const explanations: RecallExplanationHit[] = serialized.map((memory) => {
+        const matchedFields: string[] = ["content"];
+        if (options.filter?.agent) matchedFields.push("agent");
+        if (options.filter?.metadata) matchedFields.push("metadata");
+        return {
+          memory,
+          score: memory.similarity,
+          distance: distances.get(memory.id) ?? 1 - memory.similarity,
+          rankingReason,
+          matchedFields,
+          metadataMatch: metadataMatched.get(memory.id) ?? true,
+          providerUsed: storage.name,
+          searchTime,
+          rankingTime,
+        };
+      });
+
+      const totalTime = performance.now() - trace.startedAt;
+      const persistedExplain: PersistedRecallExplainPayload = {
+        enabled: true,
+        providerUsed: storage.name,
+        rankingStrategy: rankingReason,
+        signals: {
+          semantic: "enabled",
+          keyword: keywordSignal,
+          reranker:
+            options.rerank === true && this.reranker ? "enabled" : "disabled",
+          mmr: mmrLambda === null ? "disabled" : "enabled",
+          recency: "disabled",
+        },
+        results: explanations.map((hit) => ({
+          memoryId: hit.memory.id,
+          score: hit.score,
+          distance: hit.distance,
+          rankingReason: hit.rankingReason,
+          matchedFields: hit.matchedFields,
+          metadataMatch: hit.metadataMatch,
+        })),
+        searchTimeMs: searchTime,
+        rankingTimeMs: rankingTime,
+        totalTimeMs: totalTime,
+      };
+      trace.success({ ...telemetryFields, explain: persistedExplain });
+
+      return {
+        results: explanations,
+        providerUsed: storage.name,
+        searchTime,
+        rankingTime,
+        totalTime,
+        traceId: trace.context.traceId,
+      };
+    } catch (error) {
+      trace.failure(error, {
+        query: options.query,
+        agentId: options.filter?.agent ?? null,
+      });
+      throw wrapOperationError("recall", error);
+    }
   }
 
-  /**
-   * Compress related memories for an agent into a single summarized memory.
-   * Only available when `llm` (or `compression`) was configured at construction.
-   */
+  /** Batch recall — parent event + child traces. */
+  async recallBatch(
+    queries: Array<Omit<RecallOptions, "explain">>,
+  ): Promise<RecallResult[][]> {
+    const parent = this.telemetry.start("recallBatch");
+    try {
+      if (!Array.isArray(queries) || queries.length === 0) {
+        throw new ValidationError("recallBatch requires a non-empty array");
+      }
+      const out: RecallResult[][] = [];
+      for (const q of queries) {
+        const child = parent.child("recall");
+        try {
+          const hits = await this.recall({ ...q, explain: false });
+          child.success({
+            query: q.query,
+            returnedCount: hits.length,
+            memoryIds: hits.map((h) => h.id),
+            similarityScores: hits.map((h) => h.similarity),
+          });
+          out.push(hits);
+        } catch (error) {
+          child.failure(error, { query: q.query });
+          throw error;
+        }
+      }
+      parent.success({
+        returnedCount: out.reduce((n, r) => n + r.length, 0),
+        extra: { queryCount: queries.length },
+      });
+      return out;
+    } catch (error) {
+      parent.failure(error);
+      throw wrapOperationError("recallBatch", error);
+    }
+  }
+
   async compress(
     this: Wolbarg<true>,
     options: CompressOptions,
@@ -552,269 +820,566 @@ export class Wolbarg<HasLlm extends boolean = false> {
 
   /** @internal */
   private async runCompress(options: CompressOptions): Promise<CompressResult> {
-    const { storage, embedding, organization } = await this.requireReady();
-    if (!this.compression) {
-      throw new ProviderNotConfiguredError(
-        "llm",
-        "compress",
-        "pass llm: openaiLlm(...) (or compression) in the constructor",
-      );
-    }
-    assertNonEmptyString(options.agent, "agent");
-    const limit = options.limit ?? 50;
-    assertFiniteNumber(limit, "limit", { min: 2, max: 500 });
+    const trace = this.telemetry.start("compress");
+    try {
+      const { storage, embedding, organization } = await this.requireReady();
+      if (!this.compression) {
+        throw new ProviderNotConfiguredError(
+          "llm",
+          "compress",
+          "pass llm: openaiLlm(...) (or compression) in the constructor",
+        );
+      }
+      assertNonEmptyString(options.agent, "agent");
+      const limit = options.limit ?? 50;
+      assertFiniteNumber(limit, "limit", { min: 2, max: 500 });
 
-    const rows = await storage.listMemories(
-      {
-        organization,
-        agent: options.agent.trim(),
-        includeArchived: false,
-      },
-      limit,
-    );
-
-    if (rows.length < 2) {
-      throw new ValidationError(
-        "compress requires at least 2 active memories for the given agent",
-      );
-    }
-
-    const records = rows.map(toMemoryRecord);
-    const summaryText = await this.compression.compress(records);
-    const vector = await embedding.embed(summaryText);
-    this.assertEmbeddingDimensions(vector.length);
-
-    const summaryId = createId();
-    const timestamp = nowIso();
-
-    return this.withWriteLock(async () => {
-      const summaryRow = await storage.insertMemory({
-        id: summaryId,
-        organization,
-        agent: options.agent.trim(),
-        contentText: summaryText,
-        metadata: {
-          compressed: true,
-          sourceCount: records.length,
-          sourceIds: records.map((r) => r.id),
+      const tRead = performance.now();
+      const rows = await storage.listMemories(
+        {
+          organization,
+          agent: options.agent.trim(),
+          includeArchived: false,
         },
-        embedding: vector,
+        limit,
+      );
+      trace.mark("databaseReadMs", performance.now() - tRead);
+
+      if (rows.length < 2) {
+        throw new ValidationError(
+          "compress requires at least 2 active memories for the given agent",
+        );
+      }
+
+      const records = rows.map(toMemoryRecord);
+      const summaryText = await this.compression.compress(records);
+      const tEmbed = performance.now();
+      const vector = await embedding.embed(summaryText);
+      trace.mark("embeddingMs", performance.now() - tEmbed);
+      this.assertEmbeddingDimensions(vector.length);
+
+      const summaryId = createId();
+      const timestamp = nowIso();
+
+      const result = await this.withWriteLock(async () => {
+        const tWrite = performance.now();
+        const summaryRow = await storage.insertMemory({
+          id: summaryId,
+          organization,
+          agent: options.agent.trim(),
+          contentText: summaryText,
+          metadata: {
+            compressed: true,
+            sourceCount: records.length,
+            sourceIds: records.map((r) => r.id),
+          },
+          embedding: vector,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+
+        const archivedIds = await storage.archiveMemories(
+          records.map((r) => r.id),
+          organization,
+          summaryId,
+          timestamp,
+        );
+        trace.mark("databaseWriteMs", performance.now() - tWrite);
+
+        return {
+          summary: toMemoryRecord(summaryRow),
+          archivedIds,
+        };
+      });
+
+      trace.success({
+        provider: storage.name,
+        memoryIds: [result.summary.id, ...result.archivedIds],
+        returnedCount: 1,
+        agentId: options.agent.trim(),
+      });
+      return result;
+    } catch (error) {
+      trace.failure(error, { agentId: options.agent });
+      throw wrapOperationError("compress", error);
+    }
+  }
+
+  async ingest(options: IngestOptions): Promise<IngestResult> {
+    const trace = this.telemetry.start("ingest");
+    try {
+      const { storage, embedding, organization } = await this.requireReady();
+      assertNonEmptyString(options.agent, "agent");
+
+      const loaded = await loadIngestSource(options.source);
+      let usedOcr = false;
+      let usedVision = false;
+      let text = loaded.rawText ?? "";
+
+      if (!loaded.rawText) {
+        const parser = resolveParser(loaded.filename, loaded.mimeType);
+        const parsed = await parser.parse({
+          buffer: loaded.buffer,
+          filename: loaded.filename,
+          mimeType: loaded.mimeType,
+        });
+        text = parsed.text;
+
+        if (parsed.isImage && parsed.imageBuffer) {
+          const parts: string[] = [];
+          if (this.ocr) {
+            const ocrResult = await this.ocr.recognize(
+              parsed.imageBuffer,
+              parsed.mimeType,
+            );
+            if (ocrResult.text) {
+              parts.push(ocrResult.text);
+              usedOcr = true;
+            }
+          }
+          if (this.vision) {
+            const visionResult = await this.vision.analyze(
+              parsed.imageBuffer,
+              parsed.mimeType,
+            );
+            if (visionResult.caption) {
+              parts.push(`Caption: ${visionResult.caption}`);
+            }
+            if (visionResult.description) {
+              parts.push(visionResult.description);
+            }
+            if (visionResult.entities.length > 0) {
+              parts.push(`Entities: ${visionResult.entities.join(", ")}`);
+            }
+            if (parts.length > 0) {
+              usedVision = true;
+            }
+          }
+          text = parts.join("\n\n").trim();
+        }
+      }
+
+      if (!text) {
+        throw new ValidationError(
+          "ingest could not extract text from the document (configure ocr/vision for images, or provide text)",
+        );
+      }
+
+      const strategy =
+        this.chunking ??
+        (options.chunking?.strategy
+          ? createChunkingStrategy(options.chunking.strategy)
+          : inferChunkingStrategy(text));
+
+      const chunks = strategy.chunk(text, {
+        chunkSize: options.chunking?.chunkSize,
+        overlap: options.chunking?.overlap,
+      });
+
+      if (chunks.length === 0) {
+        throw new ValidationError("ingest produced zero chunks");
+      }
+
+      const tEmbed = performance.now();
+      const vectors = await embedMany(
+        embedding,
+        chunks.map((c) => c.text),
+      );
+      trace.mark("embeddingMs", performance.now() - tEmbed);
+      for (const vector of vectors) {
+        this.assertEmbeddingDimensions(vector.length);
+      }
+
+      const baseMeta = options.metadata ?? {};
+      const timestamp = nowIso();
+      const inputs = chunks.map((chunk, i) => ({
+        id: createId(),
+        organization,
+        agent: options.agent.trim(),
+        contentText: chunk.text,
+        metadata: {
+          ...baseMeta,
+          ingest: true,
+          chunkIndex: chunk.index,
+          chunkCount: chunks.length,
+          sourceFilename: loaded.filename ?? null,
+        },
+        embedding: vectors[i]!,
         createdAt: timestamp,
         updatedAt: timestamp,
+      }));
+
+      const rows = await this.withWriteLock(async () => {
+        const tWrite = performance.now();
+        const result = await storage.insertMemoriesBatch(inputs);
+        trace.mark("databaseWriteMs", performance.now() - tWrite);
+        return result;
       });
 
-      const archivedIds = await storage.archiveMemories(
-        records.map((r) => r.id),
-        organization,
-        summaryId,
-        timestamp,
-      );
-
-      return {
-        summary: toMemoryRecord(summaryRow),
-        archivedIds,
-      };
-    });
-  }
-
-  /** Ingest a document: parse → OCR/vision (optional) → chunk → embed → store. */
-  async ingest(options: IngestOptions): Promise<IngestResult> {
-    const { storage, embedding, organization } = await this.requireReady();
-    assertNonEmptyString(options.agent, "agent");
-
-    const loaded = await loadIngestSource(options.source);
-    let usedOcr = false;
-    let usedVision = false;
-    let text = loaded.rawText ?? "";
-
-    if (!loaded.rawText) {
-      const parser = resolveParser(loaded.filename, loaded.mimeType);
-      const parsed = await parser.parse({
-        buffer: loaded.buffer,
-        filename: loaded.filename,
-        mimeType: loaded.mimeType,
-      });
-      text = parsed.text;
-
-      if (parsed.isImage && parsed.imageBuffer) {
-        const parts: string[] = [];
-        if (this.ocr) {
-          const ocrResult = await this.ocr.recognize(
-            parsed.imageBuffer,
-            parsed.mimeType,
-          );
-          if (ocrResult.text) {
-            parts.push(ocrResult.text);
-            usedOcr = true;
-          }
-        }
-        if (this.vision) {
-          const visionResult = await this.vision.analyze(
-            parsed.imageBuffer,
-            parsed.mimeType,
-          );
-          if (visionResult.caption) {
-            parts.push(`Caption: ${visionResult.caption}`);
-          }
-          if (visionResult.description) {
-            parts.push(visionResult.description);
-          }
-          if (visionResult.entities.length > 0) {
-            parts.push(`Entities: ${visionResult.entities.join(", ")}`);
-          }
-          if (parts.length > 0) {
-            usedVision = true;
-          }
-        }
-        text = parts.join("\n\n").trim();
-      }
-    }
-
-    if (!text) {
-      throw new ValidationError(
-        "ingest could not extract text from the document (configure ocr/vision for images, or provide text)",
-      );
-    }
-
-    const strategy =
-      this.chunking ??
-      (options.chunking?.strategy
-        ? createChunkingStrategy(options.chunking.strategy)
-        : inferChunkingStrategy(text));
-
-    const chunks = strategy.chunk(text, {
-      chunkSize: options.chunking?.chunkSize,
-      overlap: options.chunking?.overlap,
-    });
-
-    if (chunks.length === 0) {
-      throw new ValidationError("ingest produced zero chunks");
-    }
-
-    const vectors = await embedMany(
-      embedding,
-      chunks.map((c) => c.text),
-    );
-    for (const vector of vectors) {
-      this.assertEmbeddingDimensions(vector.length);
-    }
-
-    const baseMeta = options.metadata ?? {};
-    const timestamp = nowIso();
-    const inputs = chunks.map((chunk, i) => ({
-      id: createId(),
-      organization,
-      agent: options.agent.trim(),
-      contentText: chunk.text,
-      metadata: {
-        ...baseMeta,
-        ingest: true,
-        chunkIndex: chunk.index,
+      const result = {
+        memories: rows.map(toMemoryRecord),
+        extractedChars: text.length,
         chunkCount: chunks.length,
-        sourceFilename: loaded.filename ?? null,
-      },
-      embedding: vectors[i]!,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }));
-
-    const rows = await this.withWriteLock(async () => {
-      return storage.insertMemoriesBatch(inputs);
-    });
-
-    return {
-      memories: rows.map(toMemoryRecord),
-      extractedChars: text.length,
-      chunkCount: chunks.length,
-      usedOcr,
-      usedVision,
-    };
+        usedOcr,
+        usedVision,
+      };
+      trace.success({
+        provider: storage.name,
+        memoryIds: result.memories.map((m) => m.id),
+        returnedCount: result.memories.length,
+        agentId: options.agent.trim(),
+        tags: telemetryTags(baseMeta),
+      });
+      return result;
+    } catch (error) {
+      trace.failure(error, { agentId: options.agent });
+      throw wrapOperationError("ingest", error);
+    }
   }
 
-  /** Delete memories by ID or filter. */
   async forget(options: ForgetOptions): Promise<number> {
-    const { storage, organization } = await this.requireReady();
+    const trace = this.telemetry.start("forget");
+    try {
+      const { storage, organization } = await this.requireReady();
 
-    return this.withWriteLock(async () => {
-      if ("id" in options && options.id !== undefined) {
-        assertNonEmptyString(options.id, "id");
-        const deleted = await storage.deleteMemoryById(
-          options.id.trim(),
-          organization,
+      const deleted = await this.withWriteLock(async () => {
+        if ("id" in options && options.id !== undefined) {
+          assertNonEmptyString(options.id, "id");
+          const ok = await storage.deleteMemoryById(
+            options.id.trim(),
+            organization,
+          );
+          return ok ? 1 : 0;
+        }
+
+        if ("filter" in options && options.filter?.agent) {
+          assertNonEmptyString(options.filter.agent, "filter.agent");
+          return storage.deleteMemoriesByFilter({
+            organization,
+            agent: options.filter.agent.trim(),
+            includeArchived: true,
+          });
+        }
+
+        throw new ValidationError(
+          "forget requires either { id } or { filter: { agent } }",
         );
-        return deleted ? 1 : 0;
-      }
+      });
 
-      if ("filter" in options && options.filter?.agent) {
-        assertNonEmptyString(options.filter.agent, "filter.agent");
-        return storage.deleteMemoriesByFilter({
-          organization,
-          agent: options.filter.agent.trim(),
-          includeArchived: true,
-        });
-      }
-
-      throw new ValidationError(
-        "forget requires either { id } or { filter: { agent } }",
-      );
-    });
+      trace.success({
+        provider: storage.name,
+        returnedCount: deleted,
+        memoryIds:
+          "id" in options && options.id ? [options.id.trim()] : null,
+        filters: "filter" in options ? options.filter : null,
+        agentId:
+          "filter" in options ? options.filter?.agent?.trim() ?? null : null,
+      });
+      return deleted;
+    } catch (error) {
+      trace.failure(error, {
+        agentId: "filter" in options ? options.filter?.agent ?? null : null,
+      });
+      throw wrapOperationError("forget", error);
+    }
   }
 
-  /** Return the history of a memory. */
   async history(options: HistoryOptions): Promise<HistoryResult> {
-    const { storage, organization } = await this.requireReady();
-    assertNonEmptyString(options.id, "id");
+    const trace = this.telemetry.start("history");
+    try {
+      const { storage, organization } = await this.requireReady();
+      assertNonEmptyString(options.id, "id");
 
-    const row = await storage.getMemoryById(options.id.trim(), organization);
-    if (!row) {
-      throw new MemoryNotFoundError(`Memory not found: ${options.id}`);
+      const row = await storage.getMemoryById(options.id.trim(), organization);
+      if (!row) {
+        throw new MemoryNotFoundError(`Memory not found: ${options.id}`);
+      }
+
+      const events = await storage.getHistory(row.id);
+      const result = {
+        memory: toMemoryRecord(row),
+        events: events.map(toHistoryEvent),
+      };
+      trace.success({
+        provider: storage.name,
+        memoryIds: [row.id],
+        returnedCount: events.length,
+        agentId: row.agent,
+        tags: telemetryTags(deserializeMetadata(row.metadata_json)),
+      });
+      return result;
+    } catch (error) {
+      trace.failure(error);
+      throw wrapOperationError("history", error);
     }
-
-    const events = await storage.getHistory(row.id);
-    return {
-      memory: toMemoryRecord(row),
-      events: events.map(toHistoryEvent),
-    };
   }
 
-  /** Aggregate statistics for the current organization. */
   async stats(): Promise<StatsResult> {
-    const { storage, embedding, organization } = await this.requireReady();
-    const counts = await storage.getStats(organization);
-    const databaseSizeBytes = await storage.getDatabaseSizeBytes();
+    const trace = this.telemetry.start("stats");
+    try {
+      const { storage, embedding, organization } = await this.requireReady();
+      const counts = await storage.getStats(organization);
+      const databaseSizeBytes = await storage.getDatabaseSizeBytes();
 
-    return {
-      totalMemories: counts.totalMemories,
-      activeMemories: counts.activeMemories,
-      archivedMemories: counts.archivedMemories,
-      totalAgents: counts.totalAgents,
-      databaseSizeBytes,
-      embeddingModel: embedding.model,
-      llmModel: this.llm?.model ?? null,
-      organization,
-      embeddingDimensions: this.embeddingDimensions ?? 0,
-    };
-  }
-
-  /** Delete every memory in the current organization. */
-  async clear(options: ClearOptions): Promise<number> {
-    const { storage, organization } = await this.requireReady();
-
-    if (!options || options.confirm !== true) {
-      throw new ValidationError(
-        "clear requires { confirm: true } to permanently delete all memories",
-      );
+      const result = {
+        totalMemories: counts.totalMemories,
+        activeMemories: counts.activeMemories,
+        archivedMemories: counts.archivedMemories,
+        totalAgents: counts.totalAgents,
+        databaseSizeBytes,
+        embeddingModel: embedding.model,
+        llmModel: this.llm?.model ?? null,
+        organization,
+        embeddingDimensions: this.embeddingDimensions ?? 0,
+      };
+      trace.success({
+        provider: storage.name,
+        returnedCount: result.totalMemories,
+      });
+      return result;
+    } catch (error) {
+      trace.failure(error);
+      throw wrapOperationError("stats", error);
     }
-
-    return this.withWriteLock(async () => {
-      return storage.clearOrganization(organization);
-    });
   }
 
-  /**
-   * Serialize writes for SQLite (single connection). Postgres uses a pool and
-   * per-statement atomic CTEs — locking here only serializes throughput.
-   */
+  async clear(options: ClearOptions): Promise<number> {
+    const trace = this.telemetry.start("clear");
+    try {
+      const { storage, organization } = await this.requireReady();
+
+      if (!options || options.confirm !== true) {
+        throw new ValidationError(
+          "clear requires { confirm: true } to permanently delete all memories",
+        );
+      }
+
+      const deleted = await this.withWriteLock(async () => {
+        return storage.clearOrganization(organization);
+      });
+      trace.success({ provider: storage.name, returnedCount: deleted });
+      return deleted;
+    } catch (error) {
+      trace.failure(error);
+      throw wrapOperationError("clear", error);
+    }
+  }
+
+  /** Create an immutable named checkpoint of the memory database. */
+  async checkpoint(
+    name: string,
+    options?: CheckpointOptions,
+  ): Promise<CheckpointInfo> {
+    const trace = this.telemetry.start("checkpoint");
+    try {
+      await this.requireReady();
+      const provider = this.requireCheckpointProvider();
+      const source = this.requireMemoryDbPath();
+      const tCheckpoint = performance.now();
+      const meta = await provider.checkpoint(name, source, options);
+      trace.mark("databaseWriteMs", performance.now() - tCheckpoint);
+      trace.success({
+        provider: provider.name,
+        checkpointId: meta.name,
+        extra: { checkpoint: meta.name },
+      });
+      return meta;
+    } catch (error) {
+      trace.failure(error, { checkpointId: name });
+      throw wrapOperationError("checkpoint", error);
+    }
+  }
+
+  /** Restore the memory database from a named checkpoint. */
+  async rollback(name: string): Promise<CheckpointInfo> {
+    const trace = this.telemetry.start("rollback");
+    let storageClosed = false;
+    try {
+      await this.requireReady();
+      const provider = this.requireCheckpointProvider();
+      const target = this.requireMemoryDbPath();
+
+      // Validate before closing — a missing checkpoint must not leave storage shut.
+      const existing = await provider.getCheckpoint(name);
+      if (!existing) {
+        throw new ValidationError(`Checkpoint "${name}" was not found`);
+      }
+
+      // Close storage before replacing the file.
+      if (this.storage) {
+        await this.storage.close();
+        storageClosed = true;
+      }
+      const tRollback = performance.now();
+      const meta = await provider.rollback(name, target);
+      trace.mark("databaseWriteMs", performance.now() - tRollback);
+      await this.storage?.open();
+      storageClosed = false;
+      if (this.embeddingDimensions !== null) {
+        await this.storage?.ensureVectorSchema(this.embeddingDimensions);
+      }
+
+      trace.success({
+        provider: provider.name,
+        checkpointId: meta.name,
+        extra: { checkpoint: meta.name },
+      });
+      return meta;
+    } catch (error) {
+      if (storageClosed && this.storage) {
+        await this.storage.open().catch(() => undefined);
+        if (this.embeddingDimensions !== null) {
+          await this.storage
+            .ensureVectorSchema(this.embeddingDimensions)
+            .catch(() => undefined);
+        }
+      }
+      trace.failure(error, { checkpointId: name });
+      throw wrapOperationError("rollback", error);
+    }
+  }
+
+  async deleteCheckpoint(name: string): Promise<boolean> {
+    const trace = this.telemetry.start("deleteCheckpoint");
+    try {
+      await this.requireReady();
+      const provider = this.requireCheckpointProvider();
+      const tDelete = performance.now();
+      const removed = await provider.deleteCheckpoint(name);
+      trace.mark("databaseWriteMs", performance.now() - tDelete);
+      trace.success({
+        provider: provider.name,
+        checkpointId: name,
+        returnedCount: removed ? 1 : 0,
+      });
+      return removed;
+    } catch (error) {
+      trace.failure(error, { checkpointId: name });
+      throw wrapOperationError("deleteCheckpoint", error);
+    }
+  }
+
+  async listCheckpoints(): Promise<CheckpointInfo[]> {
+    const trace = this.telemetry.start("listCheckpoints");
+    try {
+      await this.requireReady();
+      const provider = this.requireCheckpointProvider();
+      const tList = performance.now();
+      const list = await provider.listCheckpoints();
+      trace.mark("databaseReadMs", performance.now() - tList);
+      trace.success({
+        provider: provider.name,
+        returnedCount: list.length,
+      });
+      return list;
+    } catch (error) {
+      trace.failure(error);
+      throw wrapOperationError("listCheckpoints", error);
+    }
+  }
+
+  async getCheckpoint(name: string): Promise<CheckpointInfo | null> {
+    const trace = this.telemetry.start("getCheckpoint");
+    try {
+      await this.requireReady();
+      const provider = this.requireCheckpointProvider();
+      const tGet = performance.now();
+      const meta = await provider.getCheckpoint(name);
+      trace.mark("databaseReadMs", performance.now() - tGet);
+      trace.success({
+        provider: provider.name,
+        checkpointId: name,
+        returnedCount: meta ? 1 : 0,
+      });
+      return meta;
+    } catch (error) {
+      trace.failure(error, { checkpointId: name });
+      throw wrapOperationError("getCheckpoint", error);
+    }
+  }
+
+  /** Export the memory database to a portable SQLite + manifest bundle. */
+  async export(exportPath: string): Promise<ExportResult> {
+    const trace = this.telemetry.start("export");
+    try {
+      await this.requireReady();
+      const source = this.requireMemoryDbPath();
+      // Checkpoint WAL so export sees a consistent file.
+      if (this.storage?.name === "sqlite") {
+        // best-effort consistency via transfer helper
+      }
+      const result: MemoryExportResult = await this.transfer.exportTo(
+        exportPath,
+        source,
+        this.organization ?? undefined,
+      );
+      trace.success({
+        provider: "sqlite",
+        extra: { path: result.path, sizeBytes: result.sizeBytes },
+      });
+      return {
+        path: result.path,
+        sizeBytes: result.sizeBytes,
+        exportedAt: result.manifest.exportedAt,
+      };
+    } catch (error) {
+      trace.failure(error);
+      throw wrapOperationError("export", error);
+    }
+  }
+
+  /** Import a previously exported memory database, replacing the current file. */
+  async import(exportPath: string): Promise<ImportResult> {
+    const trace = this.telemetry.start("import");
+    let storageClosed = false;
+    try {
+      await this.requireReady();
+      const target = this.requireMemoryDbPath();
+      if (this.storage) {
+        await this.storage.close();
+        storageClosed = true;
+      }
+      const result: MemoryImportResult = await this.transfer.importFrom(
+        exportPath,
+        target,
+      );
+      await this.storage?.open();
+      storageClosed = false;
+      if (this.embeddingDimensions !== null) {
+        await this.storage?.ensureVectorSchema(this.embeddingDimensions);
+      }
+      trace.success({
+        provider: "sqlite",
+        extra: { path: result.path },
+      });
+      return {
+        path: result.path,
+        importedAt: nowIso(),
+      };
+    } catch (error) {
+      if (storageClosed && this.storage) {
+        await this.storage.open().catch(() => undefined);
+        if (this.embeddingDimensions !== null) {
+          await this.storage
+            .ensureVectorSchema(this.embeddingDimensions)
+            .catch(() => undefined);
+        }
+      }
+      trace.failure(error);
+      throw wrapOperationError("import", error);
+    }
+  }
+
+  /** Flush pending telemetry (useful in tests). */
+  async flushTelemetry(): Promise<void> {
+    await this.telemetry.flush();
+  }
+
+  /** Session id for this SDK instance (telemetry traces). */
+  get sessionId(): string {
+    return this.telemetry.sessionId;
+  }
+
   private withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
     if (this.storage?.name === "sqlite") {
       return this.writeMutex.runExclusive(fn);
@@ -822,8 +1387,12 @@ export class Wolbarg<HasLlm extends boolean = false> {
     return fn();
   }
 
-  /** Close the database connection and release resources. */
   async close(): Promise<void> {
+    if (this.storage) {
+      this.telemetry.emitShutdown(this.storage.name);
+    }
+    await this.telemetry.close().catch(() => undefined);
+    await this.checkpointProvider?.close().catch(() => undefined);
     if (this.storage) {
       await this.storage.close();
     }
@@ -836,7 +1405,6 @@ export class Wolbarg<HasLlm extends boolean = false> {
     this.initialized = false;
   }
 
-  /** Whether providers are ready for API calls. */
   get isInitialized(): boolean {
     return this.initialized;
   }
@@ -870,4 +1438,63 @@ export class Wolbarg<HasLlm extends boolean = false> {
       );
     }
   }
+
+  private requireCheckpointProvider(): CheckpointProvider {
+    if (!this.checkpointProvider) {
+      throw new ProviderNotConfiguredError(
+        "checkpoint",
+        "checkpoint",
+        "construct Wolbarg with a file-backed database",
+      );
+    }
+    return this.checkpointProvider;
+  }
+
+  private requireMemoryDbPath(): string {
+    if (!this.memoryDbPath || this.memoryDbPath === ":memory:") {
+      throw new ConfigurationError(
+        "This operation requires a file-backed SQLite memory database (not :memory:).",
+        {
+          suggestion:
+            'Use database: { provider: "sqlite", url: "./memory.db" }',
+        },
+      );
+    }
+    return path.isAbsolute(this.memoryDbPath)
+      ? this.memoryDbPath
+      : path.resolve(process.cwd(), this.memoryDbPath);
+  }
+}
+
+/** Preferred v0.3 entry — re-exported from factories as well. */
+export function wolbarg(options: WolbargOptions): Wolbarg {
+  return new Wolbarg(options as never);
+}
+
+function telemetryTags(metadata: Record<string, unknown>): string[] | null {
+  const value = metadata.tags;
+  if (typeof value === "string") {
+    const tag = value.trim();
+    return tag ? [tag] : null;
+  }
+  if (Array.isArray(value)) {
+    const tags = value.filter(
+      (tag): tag is string => typeof tag === "string" && tag.trim().length > 0,
+    );
+    return tags.length > 0 ? tags.map((tag) => tag.trim()) : null;
+  }
+  return null;
+}
+
+function commonAgent(agents: string[]): string | null {
+  const first = agents[0];
+  return first && agents.every((agent) => agent === first) ? first : null;
+}
+
+function commonTags(metadata: Array<Record<string, unknown>>): string[] | null {
+  const tags = new Set<string>();
+  for (const item of metadata) {
+    for (const tag of telemetryTags(item) ?? []) tags.add(tag);
+  }
+  return tags.size > 0 ? [...tags] : null;
 }

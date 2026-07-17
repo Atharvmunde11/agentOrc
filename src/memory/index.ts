@@ -43,3 +43,14 @@ export function toHistoryEvent(row: HistoryRow): HistoryEvent {
     createdAt: parseIso(row.created_at),
   };
 }
+
+export {
+  SqliteMemoryTransferProvider,
+} from "./transfer.js";
+export type {
+  ExportManifest,
+  MemoryExportResult,
+  MemoryImportResult,
+  MemoryTransferProvider,
+} from "./transfer.js";
+
