@@ -5,6 +5,7 @@
 **Modular, provider-agnostic semantic memory for AI agents.**
 
 [![npm version](https://img.shields.io/npm/v/wolbarg.svg)](https://www.npmjs.com/package/wolbarg)
+[![SDK CI](https://github.com/wolbarg/wolbarg/actions/workflows/sdk-ci.yml/badge.svg?branch=main)](https://github.com/wolbarg/wolbarg/actions/workflows/sdk-ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen.svg)](https://nodejs.org)
 [![Docs](https://img.shields.io/badge/docs-wolbarg.com-black)](https://wolbarg.com)
