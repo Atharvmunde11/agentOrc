@@ -5,9 +5,11 @@
 import type {
   WolbargOptions,
   StorageInput,
+  GraphInput,
 } from "./options.js";
 import {
   isEmbeddingProvider,
+  isGraphProvider,
   isLlmProvider,
   isStorageProvider,
   isTelemetryProvider,
@@ -22,6 +24,9 @@ import type {
   TelemetryConfig,
 } from "../types/index.js";
 import { ConfigurationError } from "../errors/index.js";
+import { SqliteGraphProvider } from "../graph/providers/sqlite-graph.js";
+import { Neo4jGraphProvider } from "../graph/providers/neo4j.js";
+import type { GraphConfig, GraphProvider } from "../graph/types.js";
 
 function assertNonEmpty(value: unknown, fieldName: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -129,9 +134,22 @@ export function validateTelemetryConfig(config: TelemetryConfig): TelemetryConfi
   if (!config.database || typeof config.database !== "object") {
     throw new ConfigurationError("telemetry.database is required when telemetry is enabled");
   }
+  const providerName = String(
+    (config.database as { provider?: string }).provider ?? "",
+  );
+  if (providerName === "kuzu" || providerName === "neo4j") {
+    throw new ConfigurationError(
+      `telemetry supports sqlite or postgres only (got "${providerName}")`,
+      {
+        reason: `provider=${providerName}`,
+        suggestion:
+          'Use telemetry: { database: { provider: "sqlite", url: "./telemetry.db" } }. Graph backends (kuzu/neo4j) are not valid telemetry stores.',
+      },
+    );
+  }
   if (config.database.provider !== "sqlite") {
     throw new ConfigurationError(
-      `Unsupported telemetry provider "${config.database.provider}". Only "sqlite" is implemented in v0.3.0; PostgreSQL will be added later without changing application code.`,
+      `Unsupported telemetry provider "${config.database.provider}". Only "sqlite" is implemented; PostgreSQL typed but not implemented. Telemetry supports sqlite or postgres only — not kuzu/neo4j.`,
       {
         reason: `provider=${config.database.provider}`,
         suggestion: 'Use telemetry: { database: { provider: "sqlite", url: "./telemetry.db" } }',
@@ -238,11 +256,80 @@ export function validateWolbargOptions(options: WolbargOptions): WolbargOptions 
     telemetry = validateTelemetryConfig(telemetry);
   }
 
+  let graph = options.graph;
+  if (graph !== undefined) {
+    graph = resolveGraphInput(graph);
+  }
+
   return {
     ...options,
     organization: options.organization.trim(),
     storage,
     database: undefined,
     ...(telemetry ? { telemetry } : {}),
+    ...(graph !== undefined ? { graph } : {}),
   };
+}
+
+/**
+ * Accept a GraphProvider instance or `{ provider: "sqlite" | "neo4j", … }` config.
+ * Throws ConfigurationError on garbage input.
+ */
+export function resolveGraphInput(input: GraphInput): GraphProvider {
+  if (input == null || typeof input !== "object") {
+    throw new ConfigurationError(
+      "graph must be a GraphProvider instance or a config object",
+      {
+        suggestion:
+          "Use graph: sqliteGraph({ path }) or graph: neo4jGraph({ url, username, password })",
+      },
+    );
+  }
+  if (Array.isArray(input)) {
+    throw new ConfigurationError(
+      "graph must be a GraphProvider instance or a config object",
+      {
+        suggestion:
+          "Use graph: sqliteGraph({ path }) or graph: neo4jGraph({ url, username, password })",
+      },
+    );
+  }
+  if (isGraphProvider(input)) {
+    return input;
+  }
+  const config = input as GraphConfig;
+  if (config.provider === "sqlite") {
+    if (typeof config.path !== "string" || !config.path.trim()) {
+      throw new ConfigurationError(
+        'graph sqlite config requires a non-empty "path"',
+      );
+    }
+    return new SqliteGraphProvider({ path: config.path });
+  }
+  if (config.provider === "neo4j") {
+    if (typeof config.url !== "string" || !config.url.trim()) {
+      throw new ConfigurationError('graph neo4j config requires a non-empty "url"');
+    }
+    if (typeof config.username !== "string" || !config.username.trim()) {
+      throw new ConfigurationError(
+        'graph neo4j config requires a non-empty "username"',
+      );
+    }
+    if (typeof config.password !== "string") {
+      throw new ConfigurationError('graph neo4j config requires a "password" string');
+    }
+    return new Neo4jGraphProvider({
+      url: config.url,
+      username: config.username,
+      password: config.password,
+      database: config.database,
+    });
+  }
+  throw new ConfigurationError(
+    `Unsupported graph provider "${String((config as { provider?: string }).provider)}". Supported: "sqlite", "neo4j", or a GraphProvider instance.`,
+    {
+      suggestion:
+        'Use graph: sqliteGraph({ path: "./local-graph.db" }) or graph: neo4jGraph({ url, username, password })',
+    },
+  );
 }

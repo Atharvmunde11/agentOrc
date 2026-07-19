@@ -80,6 +80,48 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
 );
 `;
 
+/**
+ * Graph memory tables (SQLite graph provider — separate DB file by default).
+ * `type` is the node kind (`memory` | `entity`); entity classification lives in metadata.
+ */
+export const CREATE_GRAPH_NODES_TABLE = `
+CREATE TABLE IF NOT EXISTS graph_nodes (
+  id TEXT PRIMARY KEY NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('memory', 'entity')),
+  ref_id TEXT NOT NULL,
+  name TEXT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+`;
+
+export const CREATE_GRAPH_EDGES_TABLE = `
+CREATE TABLE IF NOT EXISTS graph_edges (
+  id TEXT PRIMARY KEY NOT NULL,
+  from_node_id TEXT NOT NULL,
+  to_node_id TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (from_node_id) REFERENCES graph_nodes(id) ON DELETE CASCADE,
+  FOREIGN KEY (to_node_id) REFERENCES graph_nodes(id) ON DELETE CASCADE
+);
+`;
+
+/** Indexes required for in-SQL recursive CTE graph walks. */
+export const CREATE_GRAPH_INDEXES = [
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_nodes_type_ref
+     ON graph_nodes(type, ref_id);`,
+  `CREATE INDEX IF NOT EXISTS idx_graph_edges_from
+     ON graph_edges(from_node_id);`,
+  `CREATE INDEX IF NOT EXISTS idx_graph_edges_to
+     ON graph_edges(to_node_id);`,
+  `CREATE INDEX IF NOT EXISTS idx_graph_edges_from_rel
+     ON graph_edges(from_node_id, relation);`,
+  `CREATE INDEX IF NOT EXISTS idx_graph_edges_to_rel
+     ON graph_edges(to_node_id, relation);`,
+] as const;
+
 export const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_memories_org_agent ON memories(organization, agent);`,
   `CREATE INDEX IF NOT EXISTS idx_memories_org_archived ON memories(organization, archived);`,

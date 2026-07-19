@@ -24,7 +24,10 @@ export type TelemetryOperation =
   | "clear"
   | "deleteCheckpoint"
   | "listCheckpoints"
-  | "getCheckpoint";
+  | "getCheckpoint"
+  | "linkMemories"
+  | "getRelated"
+  | "graphQuery";
 
 export type TelemetryStatus = "ok" | "error" | "cancelled";
 

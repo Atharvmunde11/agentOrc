@@ -25,6 +25,7 @@
  * ```
  */
 
+import fs from "node:fs";
 import path from "node:path";
 
 import {
@@ -86,6 +87,7 @@ import {
 } from "../retrieval/index.js";
 import {
   ConfigurationError,
+  GraphCheckpointNotSupportedError,
   InitializationError,
   MemoryNotFoundError,
   ProviderNotConfiguredError,
@@ -107,6 +109,7 @@ import type {
   IngestResult,
   InitOptions,
   MemoryMetadata,
+  MemoryRecord,
   RecallExplainResponse,
   RecallExplanationHit,
   RecallOptions,
@@ -116,6 +119,7 @@ import type {
   RetrievalConfig,
   StatsResult,
 } from "../types/index.js";
+import type { GraphProvider, GetRelatedOptions } from "../graph/types.js";
 import {
   AsyncMutex,
   assertFiniteNumber,
@@ -177,6 +181,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
   private keywordSearch: KeywordSearchProvider | null = null;
   private ocr: OCRProvider | null = null;
   private vision: VisionProvider | null = null;
+  private graph: GraphProvider | null = null;
   private chunking: ChunkingStrategy | null = null;
   private retrievalConfig: RetrievalConfig = {};
   private embeddingDimensions: number | null = null;
@@ -242,6 +247,9 @@ export class Wolbarg<HasLlm extends boolean = false> {
     this.keywordSearch = validated.keywordSearch ?? null;
     this.ocr = validated.ocr ?? null;
     this.vision = validated.vision ?? null;
+    if (validated.graph) {
+      this.graph = validated.graph as GraphProvider;
+    }
     this.chunking = validated.chunking ?? null;
     this.retrievalConfig = validated.retrieval ?? {};
 
@@ -336,6 +344,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
       await this.storage.open();
       await this.telemetry.open();
       await this.checkpointProvider?.open();
+      await this.graph?.open();
 
       // Wrap embedding with transparent cache after storage is open.
       if (this.rawEmbedding && this.embeddingCacheConfig.enabled) {
@@ -399,6 +408,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
       this.initialized = true;
       this.telemetry.emitStartup(this.storage.name);
     } catch (error) {
+      await this.graph?.close().catch(() => undefined);
       await this.storage.close().catch(() => undefined);
       await this.telemetry.close().catch(() => undefined);
       this.initialized = false;
@@ -430,7 +440,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
         metadata: result.metadata,
         agentId: result.agent,
         tags: telemetryTags(result.metadata),
-        extra: { upsertAction: result.action },
+        extra: { upsertAction: result.action, action: result.action },
       });
       return result;
     } catch (error) {
@@ -1254,6 +1264,13 @@ export class Wolbarg<HasLlm extends boolean = false> {
       };
 
       if (!explain) {
+        if (options.includeGraph === true && this.graph) {
+          const tGraph = performance.now();
+          for (const hit of serialized) {
+            hit.related = await this.hydrateRelated(hit.id);
+          }
+          trace.mark("databaseReadMs", performance.now() - tGraph);
+        }
         trace.success(telemetryFields);
         return serialized;
       }
@@ -1646,23 +1663,94 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Link two memories in the optional graph layer.
+   * Throws {@link ProviderNotConfiguredError} when no graph provider is set.
+   */
+  async linkMemories(
+    fromId: string,
+    toId: string,
+    relation: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<void> {
+    const trace = this.telemetry.start("linkMemories");
+    try {
+      await this.requireReady();
+      const graph = this.requireGraph("linkMemories");
+      assertNonEmptyString(fromId, "fromId");
+      assertNonEmptyString(toId, "toId");
+      assertNonEmptyString(relation, "relation");
+      const tGraph = performance.now();
+      await graph.linkMemories(
+        fromId.trim(),
+        toId.trim(),
+        relation.trim(),
+        metadata,
+      );
+      trace.mark("databaseWriteMs", performance.now() - tGraph);
+      trace.success({
+        provider: graph.name,
+        memoryIds: [fromId.trim(), toId.trim()],
+        extra: { relation: relation.trim() },
+      });
+    } catch (error) {
+      trace.failure(error);
+      throw wrapOperationError("linkMemories", error);
+    }
+  }
+
+  /**
+   * Traverse related memories via the optional graph layer.
+   * Throws {@link ProviderNotConfiguredError} when no graph provider is set.
+   * Results are re-hydrated from SQL storage when available.
+   */
+  async getRelated(
+    memoryId: string,
+    options?: GetRelatedOptions,
+  ): Promise<MemoryRecord[]> {
+    const trace = this.telemetry.start("getRelated");
+    try {
+      await this.requireReady();
+      const graph = this.requireGraph("getRelated");
+      assertNonEmptyString(memoryId, "memoryId");
+      const tGraph = performance.now();
+      const related = await this.hydrateRelated(memoryId.trim(), options);
+      trace.mark("databaseReadMs", performance.now() - tGraph);
+      trace.success({
+        provider: graph.name,
+        memoryIds: [memoryId.trim(), ...related.map((r) => r.id)],
+        returnedCount: related.length,
+      });
+      return related;
+    } catch (error) {
+      trace.failure(error);
+      throw wrapOperationError("getRelated", error);
+    }
+  }
+
   async forget(options: ForgetOptions): Promise<number> {
     const trace = this.telemetry.start("forget");
     try {
       const { storage, organization } = await this.requireReady();
 
+      const deletedIds: string[] = [];
       const deleted = await this.withWriteLock(async () => {
         if ("id" in options && options.id !== undefined) {
           assertNonEmptyString(options.id, "id");
-          const ok = await storage.deleteMemoryById(
-            options.id.trim(),
-            organization,
-          );
+          const id = options.id.trim();
+          const ok = await storage.deleteMemoryById(id, organization);
+          if (ok) deletedIds.push(id);
           return ok ? 1 : 0;
         }
 
         if ("filter" in options && options.filter?.agent) {
           assertNonEmptyString(options.filter.agent, "filter.agent");
+          const rows = await storage.listMemories({
+            organization,
+            agent: options.filter.agent.trim(),
+            includeArchived: true,
+          });
+          for (const row of rows) deletedIds.push(row.id);
           return storage.deleteMemoriesByFilter({
             organization,
             agent: options.filter.agent.trim(),
@@ -1675,14 +1763,24 @@ export class Wolbarg<HasLlm extends boolean = false> {
         );
       });
 
+      if (deleted > 0 && this.graph && deletedIds.length > 0) {
+        const tGraph = performance.now();
+        for (const id of deletedIds) {
+          await this.graph.deleteMemory(id);
+        }
+        trace.mark("databaseWriteMs", performance.now() - tGraph);
+      }
+
       trace.success({
         provider: storage.name,
         returnedCount: deleted,
-        memoryIds:
-          "id" in options && options.id ? [options.id.trim()] : null,
+        memoryIds: deletedIds.length > 0 ? deletedIds : null,
         filters: "filter" in options ? options.filter : null,
         agentId:
           "filter" in options ? options.filter?.agent?.trim() ?? null : null,
+        extra: this.graph
+          ? { graphCascade: deletedIds.length }
+          : undefined,
       });
       if (deleted > 0) {
         this.emitChange({
@@ -1777,6 +1875,15 @@ export class Wolbarg<HasLlm extends boolean = false> {
       }
 
       const deleted = await this.withWriteLock(async () => {
+        if (this.graph) {
+          const rows = await storage.listMemories({
+            organization,
+            includeArchived: true,
+          });
+          for (const row of rows) {
+            await this.graph.deleteMemory(row.id);
+          }
+        }
         return storage.clearOrganization(organization);
       });
       trace.success({ provider: storage.name, returnedCount: deleted });
@@ -1797,8 +1904,10 @@ export class Wolbarg<HasLlm extends boolean = false> {
       await this.requireReady();
       const provider = this.requireCheckpointProvider();
       const source = this.requireMemoryDbPath();
+      this.assertGraphCheckpointSupported("checkpoint");
       const tCheckpoint = performance.now();
       const meta = await provider.checkpoint(name, source, options);
+      await this.snapshotGraphAlongside(meta.snapshotPath, "checkpoint");
       trace.mark("databaseWriteMs", performance.now() - tCheckpoint);
       trace.success({
         provider: provider.name,
@@ -1832,8 +1941,13 @@ export class Wolbarg<HasLlm extends boolean = false> {
         await this.storage.close();
         storageClosed = true;
       }
+      const graphClosed = await this.closeGraphForSnapshot();
       const tRollback = performance.now();
       const meta = await provider.rollback(name, target);
+      await this.restoreGraphAlongside(meta.snapshotPath, "rollback");
+      if (graphClosed) {
+        await this.graph?.open();
+      }
       trace.mark("databaseWriteMs", performance.now() - tRollback);
       await this.storage?.open();
       storageClosed = false;
@@ -1926,6 +2040,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     try {
       await this.requireReady();
       const source = this.requireMemoryDbPath();
+      this.assertGraphCheckpointSupported("export");
       // Checkpoint WAL so export sees a consistent file.
       if (this.storage?.name === "sqlite") {
         // best-effort consistency via transfer helper
@@ -1935,6 +2050,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
         source,
         this.organization ?? undefined,
       );
+      await this.snapshotGraphAlongside(result.path, "export");
       trace.success({
         provider: "sqlite",
         extra: { path: result.path, sizeBytes: result.sizeBytes },
@@ -1961,10 +2077,16 @@ export class Wolbarg<HasLlm extends boolean = false> {
         await this.storage.close();
         storageClosed = true;
       }
+      const graphClosed = await this.closeGraphForSnapshot();
+      this.assertGraphCheckpointSupported("import");
       const result: MemoryImportResult = await this.transfer.importFrom(
         exportPath,
         target,
       );
+      await this.restoreGraphAlongside(result.path, "import");
+      if (graphClosed) {
+        await this.graph?.open();
+      }
       await this.storage?.open();
       storageClosed = false;
       if (this.embeddingDimensions !== null) {
@@ -2030,6 +2152,8 @@ export class Wolbarg<HasLlm extends boolean = false> {
     this.pgListenBackend = null;
     await this.telemetry.close().catch(() => undefined);
     await this.checkpointProvider?.close().catch(() => undefined);
+    await this.graph?.close().catch(() => undefined);
+    this.graph = null;
     if (this.storage) {
       await this.storage.close();
     }
@@ -2086,6 +2210,125 @@ export class Wolbarg<HasLlm extends boolean = false> {
       );
     }
     return this.checkpointProvider;
+  }
+
+  private requireGraph(method: string): GraphProvider {
+    if (!this.graph) {
+      throw new ProviderNotConfiguredError(
+        "graph",
+        method,
+        "pass graph: sqliteGraph({ path }) or graph: neo4jGraph({ url, username, password })",
+      );
+    }
+    return this.graph;
+  }
+
+  private assertGraphCheckpointSupported(operation: string): void {
+    if (!this.graph) return;
+    if (!this.graph.supportsFileSnapshot()) {
+      throw new GraphCheckpointNotSupportedError(this.graph.name, operation);
+    }
+  }
+
+  private graphSnapshotDir(alongsidePath: string): string {
+    return `${alongsidePath}.graph`;
+  }
+
+  private async closeGraphForSnapshot(): Promise<boolean> {
+    if (!this.graph || !this.graph.supportsFileSnapshot()) return false;
+    await this.graph.close();
+    return true;
+  }
+
+  private async snapshotGraphAlongside(
+    alongsidePath: string,
+    operation: string,
+  ): Promise<void> {
+    if (!this.graph) return;
+    if (!this.graph.supportsFileSnapshot()) {
+      throw new GraphCheckpointNotSupportedError(this.graph.name, operation);
+    }
+    const dataPath = this.graph.getDataPath();
+    if (!dataPath) return;
+    const dest = this.graphSnapshotDir(alongsidePath);
+    // Close briefly so files are consistent on Windows.
+    await this.graph.close();
+    try {
+      if (fs.existsSync(dest)) {
+        fs.rmSync(dest, { recursive: true, force: true });
+      }
+      if (fs.existsSync(dataPath)) {
+        const stat = fs.statSync(dataPath);
+        if (stat.isDirectory()) {
+          fs.cpSync(dataPath, dest, { recursive: true });
+        } else {
+          fs.mkdirSync(dest, { recursive: true });
+          fs.cpSync(dataPath, path.join(dest, path.basename(dataPath)));
+          // Copy sibling WAL/SHM files if present (SQLite graph file).
+          const parent = path.dirname(dataPath);
+          const base = path.basename(dataPath);
+          for (const entry of fs.readdirSync(parent)) {
+            if (entry === base) continue;
+            if (entry.startsWith(base)) {
+              fs.cpSync(
+                path.join(parent, entry),
+                path.join(dest, entry),
+                { recursive: true },
+              );
+            }
+          }
+        }
+      }
+    } finally {
+      await this.graph.open();
+    }
+  }
+
+  private async restoreGraphAlongside(
+    alongsidePath: string,
+    operation: string,
+  ): Promise<void> {
+    if (!this.graph) return;
+    if (!this.graph.supportsFileSnapshot()) {
+      throw new GraphCheckpointNotSupportedError(this.graph.name, operation);
+    }
+    const dataPath = this.graph.getDataPath();
+    if (!dataPath) return;
+    const src = this.graphSnapshotDir(alongsidePath);
+    if (!fs.existsSync(src)) {
+      // Older checkpoints without graph snapshot — leave graph empty/as-is.
+      return;
+    }
+    if (fs.existsSync(dataPath)) {
+      fs.rmSync(dataPath, { recursive: true, force: true });
+    }
+    const entries = fs.readdirSync(src);
+    if (entries.length === 1 && entries[0] === path.basename(dataPath)) {
+      fs.mkdirSync(path.dirname(dataPath), { recursive: true });
+      fs.cpSync(path.join(src, entries[0]!), dataPath, { recursive: true });
+    } else {
+      fs.mkdirSync(path.dirname(dataPath), { recursive: true });
+      fs.cpSync(src, dataPath, { recursive: true });
+    }
+  }
+
+  private async hydrateRelated(
+    memoryId: string,
+    options?: GetRelatedOptions,
+  ): Promise<MemoryRecord[]> {
+    const graph = this.requireGraph("getRelated");
+    const related = await graph.getRelated(memoryId, options);
+    const { storage, organization } = await this.requireReady();
+    const out: MemoryRecord[] = [];
+    for (const stub of related) {
+      const row = await storage.getMemoryById(stub.id, organization);
+      if (row) {
+        out.push(toMemoryRecord(row));
+      } else {
+        out.push(stub);
+      }
+    }
+    return out;
   }
 
   private requireMemoryDbPath(): string {

@@ -8,7 +8,6 @@
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import type { EmbeddingCacheStore } from "./cache.js";
 import { embeddingToBuffer } from "../utils/index.js";
-import { bufferToEmbedding } from "../utils/vector.js";
 
 export const CREATE_EMBEDDING_CACHE_TABLE = `
 CREATE TABLE IF NOT EXISTS embedding_cache (

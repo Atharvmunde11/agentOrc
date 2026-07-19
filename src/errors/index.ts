@@ -168,6 +168,27 @@ export class ProviderNotConfiguredError extends ConfigurationError {
   }
 }
 
+/**
+ * Thrown when graph checkpoint / rollback / export / import is requested for a
+ * network-backed graph provider (e.g. Neo4j). File-backed SQLite graph supports
+ * snapshots; Neo4j does not in v1 — we refuse rather than silently skip.
+ */
+export class GraphCheckpointNotSupportedError extends WolbargError {
+  constructor(backend: string, operation: string) {
+    super(
+      `graph checkpoint not supported for network-backed graph providers (${backend})`,
+      "GRAPH_CHECKPOINT_NOT_SUPPORTED",
+      {
+        operation,
+        reason: `${backend} is networked / not file-backed`,
+        suggestion:
+          "Use sqliteGraph({ path }) for local snapshots, or checkpoint memory storage only without a network graph provider.",
+      },
+    );
+    this.name = "GraphCheckpointNotSupportedError";
+  }
+}
+
 /** Map low-level SQLite / driver errors into actionable operation errors. */
 export function wrapOperationError(
   operation: string,

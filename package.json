@@ -1,7 +1,7 @@
 {
   "name": "wolbarg",
-  "version": "0.4.0",
-  "description": "Wolbarg — modular, provider-agnostic semantic memory SDK for AI agents. SQLite + PostgreSQL, hybrid search, ingest, optional rerankers.",
+  "version": "0.5.0",
+  "description": "Wolbarg — modular, provider-agnostic semantic memory SDK for AI agents. SQLite + PostgreSQL, optional graph memory (SQLite / Neo4j), hybrid search, ingest, and rerankers.",
   "license": "MIT",
   "author": {
     "name": "Atharv Munde",
@@ -22,6 +22,8 @@
     "embeddings",
     "vector-search",
     "vector-database",
+    "graph-memory",
+    "neo4j",
     "sqlite",
     "sqlite-vec",
     "local-first",
@@ -69,9 +71,10 @@
     "sqlite-vec": "^0.1.6"
   },
   "peerDependencies": {
-    "pg": "^8.13.0",
-    "pdf-parse": "^1.1.4 || ^2.0.0",
     "mammoth": "^1.8.0",
+    "neo4j-driver": "^5.28.0",
+    "pdf-parse": "^1.1.4 || ^2.0.0",
+    "pg": "^8.13.0",
     "tesseract.js": "^5.1.0"
   },
   "peerDependenciesMeta": {
@@ -86,11 +89,15 @@
     },
     "tesseract.js": {
       "optional": true
+    },
+    "neo4j-driver": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
     "@types/pg": "^8.11.11",
+    "neo4j-driver": "^5.28.3",
     "rimraf": "^6.0.1",
     "tsup": "^8.5.0",
     "typescript": "^5.8.3",

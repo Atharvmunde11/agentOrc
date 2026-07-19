@@ -220,6 +220,12 @@ export interface RecallOptions {
    * When `true`, return enriched explain results instead of plain RecallResult[].
    */
   explain?: boolean;
+  /**
+   * When `true` and a graph provider is configured, each hit includes
+   * `related` memories from {@link GraphProvider.getRelated}.
+   * Omitted / false → no behavior change (related is absent).
+   */
+  includeGraph?: boolean;
 }
 
 /** A single recalled memory with similarity score. */
@@ -233,6 +239,11 @@ export interface RecallResult {
   similarity: number;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * Present only when `recall({ includeGraph: true })` and a graph provider
+   * is configured. Related memories via graph traversal (depth 1, both dirs).
+   */
+  related?: MemoryRecord[];
 }
 
 /** Enriched recall hit when `explain: true`. */

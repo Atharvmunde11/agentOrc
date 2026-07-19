@@ -5,6 +5,7 @@
  */
 
 export { Wolbarg, wolbarg } from "./core/wolbarg.js";
+export { SDK_VERSION } from "./version.js";
 
 export type {
   ClearOptions,
@@ -75,6 +76,7 @@ export {
   ConfigurationError,
   DatabaseError,
   EmbeddingError,
+  GraphCheckpointNotSupportedError,
   InitializationError,
   MemoryNotFoundError,
   ProviderNotConfiguredError,
@@ -93,6 +95,8 @@ export {
   postgresConfig,
   sqliteTelemetry,
   sqliteCheckpoint,
+  sqliteGraph,
+  neo4jGraph,
   createTelemetryProvider,
   wolbarg as createWolbarg,
 } from "./factories/index.js";
@@ -172,6 +176,20 @@ export {
   LlmCompressionProvider,
 } from "./compression/index.js";
 export type { CompressionProvider } from "./compression/index.js";
+
+export {
+  SqliteGraphProvider,
+  Neo4jGraphProvider,
+} from "./graph/index.js";
+export type {
+  GraphProvider,
+  GraphConfig,
+  GraphInput,
+  GraphDirection,
+  GraphEntityInput,
+  GraphHealthResult,
+  GetRelatedOptions,
+} from "./graph/index.js";
 
 export type {
   MemoryProvider,

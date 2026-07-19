@@ -4,12 +4,18 @@
 
 # Wolbarg
 
-**Modular, provider-agnostic semantic memory for AI agents (v0.3.1).**
+**Modular, provider-agnostic semantic memory for AI agents (v0.5.0).**
 
 [![npm version](https://img.shields.io/npm/v/wolbarg.svg)](https://www.npmjs.com/package/wolbarg)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Docs](https://img.shields.io/badge/docs-wolbarg.com-black)](https://wolbarg.com)
 [![Benchmarks](https://img.shields.io/badge/benchmarks-Storage%20suite-black)](https://wolbarg.com/benchmarks)
+
+## What's new in 0.5.0
+
+Optional **graph memory** (`sqliteGraph` / `neo4jGraph`), `linkMemories` / `getRelated`, `recall({ includeGraph: true })`, cascade forget, graph-aware checkpoints, and **Wolbarg Studio** graph canvas.
+
+Full notes: [CHANGELOG](./CHANGELOG.md) · [Docs — What's New](https://wolbarg.com/docs/guides/whats-new) · [Graph memory](https://wolbarg.com/docs/graph-memory) · [Studio](https://wolbarg.com/docs/observability)
 
 ## Benchmarks
 
@@ -37,6 +43,7 @@ Node.js **22.5+**.
 | Peer | Required for |
 | --- | --- |
 | `pg` | `postgres({ … })` storage |
+| `neo4j-driver` | `neo4jGraph({ … })` graph backend |
 | `pdf-parse` (pin `@1.1.4`) | `ingest()` of `.pdf` files |
 | `mammoth` | `ingest()` of `.docx` files |
 | `tesseract.js` | OCR provider for images |
@@ -83,6 +90,33 @@ await ctx.remember({
 const hits = await ctx.recall({ query: "invoices", topK: 5 });
 const explained = await ctx.recall({ query: "invoices", explain: true });
 await ctx.checkpoint("before-compress");
+```
+
+### Optional graph (0.5)
+
+```ts
+import { wolbarg, openaiEmbedding, sqliteGraph } from "wolbarg";
+
+const ctx = wolbarg({
+  organization: "my-org",
+  database: { provider: "sqlite", url: "./memory.db" },
+  embedding: openaiEmbedding({
+    apiKey: process.env.OPENAI_API_KEY!,
+    model: "text-embedding-3-small",
+  }),
+  graph: sqliteGraph({ path: "./graph.db" }),
+});
+
+const a = await ctx.remember({
+  agent: "research",
+  content: { text: "Refunds take 5 business days." },
+});
+const b = await ctx.remember({
+  agent: "research",
+  content: { text: "Chargebacks escalate to risk." },
+});
+await ctx.linkMemories(a.id, b.id, "related_to");
+const related = await ctx.getRelated(a.id);
 ```
 
 `new Wolbarg({ storage: sqlite("./memory.db"), embedding })` remains supported for backwards compatibility.

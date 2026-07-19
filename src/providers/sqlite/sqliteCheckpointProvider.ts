@@ -18,8 +18,7 @@ import type {
   CreateCheckpointOptions,
 } from "../interfaces/CheckpointProvider.js";
 import { nowIso } from "../../utils/index.js";
-
-const SDK_VERSION = "0.3.0";
+import { SDK_VERSION } from "../../version.js";
 
 export interface SqliteCheckpointProviderOptions {
   /** Directory that stores checkpoint snapshots + metadata. */
@@ -167,6 +166,74 @@ export class SqliteCheckpointProvider implements CheckpointProvider {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Consistent SQLite file backup (WAL checkpoint + backup API / copy).
+   * Used for memory snapshots and for secondary files such as the graph DB.
+   */
+  async backupSqliteFile(sourcePath: string, destPath: string): Promise<void> {
+    this.requireReady();
+    const resolved = resolveDbPath(sourcePath);
+    if (resolved === ":memory:") {
+      throw new ConfigurationError(
+        "Cannot backup an in-memory database. Use a file-backed SQLite database.",
+      );
+    }
+    if (!fs.existsSync(resolved)) {
+      throw new DatabaseError(
+        `SQLite file not found at ${resolved}`,
+        {
+          suggestion: "Ensure the source database exists before backing up.",
+        },
+      );
+    }
+    await safeSqliteBackup(resolved, destPath);
+  }
+
+  /**
+   * Snapshot a secondary SQLite file (typically the graph DB) next to a named
+   * memory checkpoint as `{name}.graph.db`.
+   */
+  async checkpointGraph(
+    name: string,
+    graphSourcePath: string,
+  ): Promise<string> {
+    this.requireReady();
+    assertCheckpointName(name);
+    const dest = this.graphSnapshotPath(name);
+    await this.backupSqliteFile(graphSourcePath, dest);
+    return dest;
+  }
+
+  /**
+   * Restore a previously snapshotted graph SQLite file into `targetPath`.
+   */
+  async rollbackGraph(name: string, targetPath: string): Promise<void> {
+    this.requireReady();
+    const snapshot = this.graphSnapshotPath(name);
+    if (!fs.existsSync(snapshot)) {
+      return;
+    }
+    const resolvedTarget = resolveDbPath(targetPath);
+    if (resolvedTarget === ":memory:") {
+      throw new ConfigurationError(
+        "Cannot rollback graph into an in-memory database.",
+      );
+    }
+    fs.mkdirSync(path.dirname(resolvedTarget), { recursive: true });
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const side = `${resolvedTarget}${suffix}`;
+      if (fs.existsSync(side)) {
+        fs.rmSync(side, { force: true });
+      }
+    }
+    await safeSqliteBackup(snapshot, resolvedTarget);
+  }
+
+  /** Absolute path of the graph snapshot for a named checkpoint, if present. */
+  graphSnapshotPath(name: string): string {
+    return path.join(this.directory, `${sanitize(name)}.graph.db`);
   }
 
   private metaPath(name: string): string {

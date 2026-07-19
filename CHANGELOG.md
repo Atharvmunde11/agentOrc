@@ -5,6 +5,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-07-19
+
+### Added
+
+- **Optional graph memory** — `graph` constructor option with `sqliteGraph({ path })` (local) and `neo4jGraph({ url, username, password })` (networked); optional peer `neo4j-driver`
+- **Typed graph API** — `linkMemories()`, `getRelated()` on the facade; provider surface also includes `unlinkMemories`, `upsertEntity`, `linkEntityToMemory`, `deleteMemory`
+- **`recall({ includeGraph: true })`** — attaches `related` neighbor memories from the graph
+- **Cascade deletes** — `forget` / `clear` remove graph memory nodes and incident edges when graph is configured
+- **Graph-aware checkpoints / export** — file-backed SQLite graph snapshots alongside memory DB; Neo4j refuses with `GraphCheckpointNotSupportedError` (`GRAPH_CHECKPOINT_NOT_SUPPORTED`)
+- **Schema v4** — memory DB index / ANN housekeeping migration on open (graph tables live in a separate SQLite file or Neo4j)
+- **Wolbarg Studio** — graph canvas, Connect for memory/telemetry/checkpoints/graph, ops filters for graph methods, stream / checkpoints / explain polish
+- **Docs** — Graph memory, What's New 0.5, Observability screenshots, provider-isolated project layout
+
+### Compatibility
+
+- Graph is **optional** and **additive**. Omitting `graph` leaves 0.4 behavior unchanged.
+- No required constructor changes for upgrades from **0.4.x**.
+- Raw Cypher `query()` is Neo4j-only; SQLite graph hard-errors (use typed methods for portable code).
+
 ## [0.4.0] — 2026-07-18
 
 ### Added
@@ -147,6 +166,7 @@ const ctx = wolbarg({
 
 - Initial npm release path (pre–modular storage / ingest)
 
+[0.5.0]: https://github.com/wolbarg/wolbarg/releases/tag/v0.5.0
 [0.4.0]: https://github.com/wolbarg/wolbarg/releases/tag/v0.4.0
 [0.3.2]: https://github.com/wolbarg/wolbarg/releases/tag/v0.3.2
 [0.3.1]: https://github.com/wolbarg/wolbarg/releases/tag/v0.3.1

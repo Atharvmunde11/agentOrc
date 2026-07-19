@@ -14,6 +14,9 @@ import { SqliteTelemetryProvider } from "../providers/sqlite/sqliteTelemetryProv
 import { SqliteCheckpointProvider } from "../providers/sqlite/sqliteCheckpointProvider.js";
 import type { TelemetryProvider } from "../providers/interfaces/TelemetryProvider.js";
 import type { CheckpointProvider } from "../providers/interfaces/CheckpointProvider.js";
+import { SqliteGraphProvider } from "../graph/providers/sqlite-graph.js";
+import { Neo4jGraphProvider } from "../graph/providers/neo4j.js";
+import type { GraphProvider } from "../graph/types.js";
 import { ConfigurationError } from "../errors/index.js";
 import type { WolbargOptions } from "../core/options.js";
 import { Wolbarg } from "../core/wolbarg.js";
@@ -75,13 +78,28 @@ export function sqliteCheckpoint(directory?: string): CheckpointProvider {
   return new SqliteCheckpointProvider({ directory });
 }
 
+/** Create an embedded SQLite graph provider (file-backed, local/dev). */
+export function sqliteGraph(options: { path: string }): GraphProvider {
+  return new SqliteGraphProvider(options);
+}
+
+/** Create a Neo4j graph provider (networked). Requires optional peer `neo4j-driver`. */
+export function neo4jGraph(options: {
+  url: string;
+  username: string;
+  password: string;
+  database?: string;
+}): GraphProvider {
+  return new Neo4jGraphProvider(options);
+}
+
 /** Create a telemetry provider from config (SQLite only in v0.3). */
 export function createTelemetryProvider(
   config: TelemetryConfig,
 ): TelemetryProvider {
   if (config.database.provider !== "sqlite") {
     throw new ConfigurationError(
-      `Unsupported telemetry provider "${config.database.provider}". Only "sqlite" is implemented in v0.3.0.`,
+      `Unsupported telemetry provider "${config.database.provider}". Only "sqlite" is implemented. Telemetry supports sqlite or postgres only — not kuzu/neo4j.`,
     );
   }
   const url =

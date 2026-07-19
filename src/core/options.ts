@@ -5,6 +5,7 @@
 import type { ChunkingStrategy } from "../chunking/index.js";
 import type { CompressionProvider } from "../compression/index.js";
 import type { EmbeddingProvider } from "../embedding/index.js";
+import type { GraphConfig, GraphProvider } from "../graph/types.js";
 import type { KeywordSearchProvider } from "../keyword/index.js";
 import type { LlmProvider } from "../llm/index.js";
 import type { OCRProvider } from "../ocr/index.js";
@@ -28,6 +29,7 @@ import type { VisionProvider } from "../vision/index.js";
 export type EmbeddingInput = EmbeddingProvider | EmbeddingConfig;
 export type LlmInput = LlmProvider | LlmConfig;
 export type StorageInput = StorageProvider | StorageConfig | DatabaseConfig;
+export type GraphInput = GraphProvider | GraphConfig;
 
 export interface WolbargOptionsBase {
   /** Organization namespace isolating memories within a shared database. */
@@ -57,6 +59,12 @@ export interface WolbargOptionsBase {
   ocr?: OCRProvider;
   /** Optional vision model for image captions. */
   vision?: VisionProvider;
+  /**
+   * Optional graph memory layer (SQLite embedded or Neo4j networked).
+   * Fully optional — omitting it does not change existing memory behavior.
+   * Accepts a {@link GraphProvider} instance or a recognized config shape.
+   */
+  graph?: GraphInput;
   /** Optional compression provider (overrides llm-backed default). */
   compression?: CompressionProvider;
   /** Optional default chunking strategy for ingest. */
@@ -106,6 +114,14 @@ export function isTelemetryProvider(
   value: TelemetryConfig | TelemetryProvider,
 ): value is TelemetryProvider {
   return typeof (value as TelemetryProvider).emit === "function";
+}
+
+export function isGraphProvider(value: GraphInput): value is GraphProvider {
+  return (
+    typeof (value as GraphProvider).open === "function" &&
+    typeof (value as GraphProvider).linkMemories === "function" &&
+    typeof (value as GraphProvider).getRelated === "function"
+  );
 }
 
 /** Resolve connection path from url or connectionString. */

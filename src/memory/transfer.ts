@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { ConfigurationError, DatabaseError, ValidationError } from "../errors/index.js";
 import { nowIso } from "../utils/index.js";
+import { SDK_VERSION } from "../version.js";
 
 export interface ExportManifest {
   format: "wolbarg-export-v1";
@@ -34,8 +35,6 @@ export interface MemoryTransferProvider {
   exportTo(path: string, sourcePath: string, organization?: string): Promise<MemoryExportResult>;
   importFrom(path: string, targetPath: string): Promise<MemoryImportResult>;
 }
-
-const SDK_VERSION = "0.3.0";
 
 export class SqliteMemoryTransferProvider implements MemoryTransferProvider {
   async exportTo(
