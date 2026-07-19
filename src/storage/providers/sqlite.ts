@@ -1639,30 +1639,33 @@ export class SqliteStorageProvider implements StorageProvider {
     }
   }
 
-  private insertEmbedding(rowid: number, embedding: Float32Array): void {
+  private insertEmbedding(rowid: number | bigint, embedding: Float32Array): void {
     const stmts = this.requireStatements();
     if (this.vectorBackend === "sqlite-vec") {
-      stmts.insertEmbedding!.run(rowid, this.toVectorParam(embedding));
+      // node:sqlite + sqlite-vec require BigInt for vec0 integer PKs (esp. Linux).
+      stmts.insertEmbedding!.run(this.toVecRowid(rowid), this.toVectorParam(embedding));
       return;
     }
-    stmts.insertEmbeddingBlob!.run(rowid, embeddingToBuffer(embedding));
+    const id = Number(rowid);
+    stmts.insertEmbeddingBlob!.run(id, embeddingToBuffer(embedding));
     // Keep the hot in-memory ANN index incremental — avoid O(n) rebuilds.
     if (this.memoryIndex) {
-      this.memoryIndex.upsert(rowid, embedding);
+      this.memoryIndex.upsert(id, embedding);
       this.memoryIndexDirty = false;
     } else {
       this.memoryIndexDirty = true;
     }
   }
 
-  private deleteEmbedding(rowid: number): void {
+  private deleteEmbedding(rowid: number | bigint): void {
     const stmts = this.requireStatements();
     try {
       if (this.vectorBackend === "sqlite-vec" && stmts.deleteEmbedding) {
-        stmts.deleteEmbedding.run(rowid);
+        stmts.deleteEmbedding.run(this.toVecRowid(rowid));
       } else if (stmts.deleteEmbeddingBlob) {
-        stmts.deleteEmbeddingBlob.run(rowid);
-        this.memoryIndex?.remove(rowid);
+        const id = Number(rowid);
+        stmts.deleteEmbeddingBlob.run(id);
+        this.memoryIndex?.remove(id);
         this.memoryIndexDirty = true;
       }
     } catch {
@@ -1685,8 +1688,8 @@ export class SqliteStorageProvider implements StorageProvider {
       for (let i = 0; i < rows.length; i += 1) {
         const row = rows[i]!;
         hits[i] = {
-          memoryRowid: row.memory_rowid,
-          distance: row.distance,
+          memoryRowid: Number(row.memory_rowid),
+          distance: Number(row.distance),
         };
       }
       return hits;
@@ -1776,6 +1779,11 @@ export class SqliteStorageProvider implements StorageProvider {
   private toVectorParam(embedding: Float32Array): Uint8Array {
     const buffer = embeddingToBuffer(embedding);
     return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  }
+
+  /** sqlite-vec vec0 PKs must be bound as BigInt under node:sqlite. */
+  private toVecRowid(rowid: number | bigint): bigint {
+    return typeof rowid === "bigint" ? rowid : BigInt(rowid);
   }
 
   private describe(error: unknown): string {
