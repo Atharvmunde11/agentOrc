@@ -1,22 +1,63 @@
 /**
- * Document parsers for ingest pipeline.
+ * Document parsers for the ingest pipeline.
+ *
+ * Converts files, buffers, and raw text into {@link ParsedDocument} instances
+ * before chunking and embedding. Optional peers: `pdf-parse`, `mammoth`.
+ *
+ * @example
+ * ```ts
+ * import { resolveParser, loadIngestSource } from "wolbarg/ingest";
+ *
+ * const source = await loadIngestSource({ path: "./report.pdf" });
+ * const parser = resolveParser(source.filename, source.mimeType);
+ * const doc = await parser.parse({ buffer: source.buffer, filename: source.filename });
+ * ```
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ConfigurationError } from "../errors/index.js";
 
+/** Normalized output from a document parser. */
 export interface ParsedDocument {
+  /** Extracted plain text (empty for image-only sources). */
   text: string;
+  /** Detected or declared MIME type. */
   mimeType: string;
+  /** Original filename when known. */
   filename?: string;
+  /** Whether the source is a raster image requiring OCR/vision. */
   isImage: boolean;
+  /** Raw image bytes when `isImage` is true. */
   imageBuffer?: Buffer;
 }
 
+/**
+ * Contract for document parsers.
+ *
+ * Implement this interface to add HTML, EPUB, or proprietary format support.
+ * Register custom parsers in the array passed to {@link resolveParser}.
+ *
+ * @example Custom parser
+ * ```ts
+ * const htmlParser: DocumentParserProvider = {
+ *   name: "html",
+ *   extensions: [".html"],
+ *   async parse({ buffer }) {
+ *     return { text: buffer.toString("utf8"), mimeType: "text/html", isImage: false };
+ *   },
+ * };
+ * ```
+ */
 export interface DocumentParserProvider {
+  /** Parser identifier. */
   readonly name: string;
+  /** File extensions this parser handles (lowercase, with dot). */
   readonly extensions: string[];
+  /**
+   * Parse a document buffer into text and optional image payload.
+   * @param input - Buffer plus optional filename and MIME hints.
+   */
   parse(input: {
     buffer: Buffer;
     filename?: string;
@@ -204,6 +245,7 @@ export class DocxParser implements DocumentParserProvider {
   }
 }
 
+/** Built-in parsers tried by {@link resolveParser} in order. */
 const DEFAULT_PARSERS: DocumentParserProvider[] = [
   new TextParser(),
   new ImageParser(),
@@ -211,6 +253,14 @@ const DEFAULT_PARSERS: DocumentParserProvider[] = [
   new DocxParser(),
 ];
 
+/**
+ * Pick a parser by file extension or MIME type.
+ *
+ * @param filename - Original filename (used for extension lookup).
+ * @param mimeType - Optional MIME fallback when extension is unknown.
+ * @param parsers - Parser list (defaults to {@link DEFAULT_PARSERS}).
+ * @returns Matching {@link DocumentParserProvider} (text parser as final fallback).
+ */
 export function resolveParser(
   filename?: string,
   mimeType?: string,
@@ -232,6 +282,18 @@ export function resolveParser(
   return parsers.find((p) => p.name === "text") ?? new TextParser();
 }
 
+/**
+ * Load ingest input from path, buffer, or inline text.
+ *
+ * @param source - Exactly one of `path`, `buffer`, or `text` must be provided.
+ * @returns Normalized buffer, filename, MIME, and optional raw text.
+ * @throws {@link ConfigurationError} when no source field is set.
+ *
+ * @example
+ * ```ts
+ * const { buffer, filename } = await loadIngestSource({ path: "./notes.md" });
+ * ```
+ */
 export async function loadIngestSource(source: {
   path?: string;
   buffer?: Buffer;
@@ -265,4 +327,5 @@ export async function loadIngestSource(source: {
   throw new ConfigurationError("ingest source must include path, buffer, or text");
 }
 
+/** Default parser chain: text, image, PDF, DOCX. */
 export { DEFAULT_PARSERS };

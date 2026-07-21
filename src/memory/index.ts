@@ -1,11 +1,19 @@
 /**
- * Memory domain helpers — mapping rows to public records.
+ * Memory domain helpers — map storage rows to public API types.
+ *
+ * Used internally by the Wolbarg facade and exportable for custom tooling.
  */
 
 import type { HistoryEvent, MemoryRecord, RecallResult } from "../types/index.js";
 import type { HistoryRow, MemoryRow } from "../storage/types.js";
 import { deserializeMetadata, parseIso } from "../utils/index.js";
 
+/**
+ * Convert a storage {@link MemoryRow} to a public {@link MemoryRecord}.
+ *
+ * @param row - Raw database row.
+ * @returns Parsed memory with Date objects and deserialized metadata.
+ */
 export function toMemoryRecord(row: MemoryRow): MemoryRecord {
   return {
     id: row.id,
@@ -20,6 +28,12 @@ export function toMemoryRecord(row: MemoryRow): MemoryRecord {
   };
 }
 
+/**
+ * Convert a storage row plus similarity score to a {@link RecallResult}.
+ *
+ * @param row - Raw database row.
+ * @param similarity - Cosine similarity in `[0, 1]` (higher is better).
+ */
 export function toRecallResult(row: MemoryRow, similarity: number): RecallResult {
   return {
     id: row.id,
@@ -34,6 +48,11 @@ export function toRecallResult(row: MemoryRow, similarity: number): RecallResult
   };
 }
 
+/**
+ * Convert a history table row to a public {@link HistoryEvent}.
+ *
+ * @param row - Raw history row from storage.
+ */
 export function toHistoryEvent(row: HistoryRow): HistoryEvent {
   return {
     id: row.id,
@@ -61,4 +80,3 @@ export {
   buildExtractMessages,
   parseExtractedFacts,
 } from "./from-messages.js";
-

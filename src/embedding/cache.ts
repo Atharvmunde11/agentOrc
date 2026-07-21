@@ -1,32 +1,49 @@
 /**
- * Transparent embedding cache wrapping any EmbeddingProvider.
+ * Transparent embedding cache wrapping any {@link EmbeddingProviderLike}.
+ *
+ * Keys are `sha256(content):model` so identical text across agents shares vectors.
+ * Use {@link withEmbeddingCache} with a {@link EmbeddingCacheStore} implementation.
  */
 
 import { createHash } from "node:crypto";
 
-/** Minimal provider contract — avoids circular import with embedding/index.ts */
+/**
+ * Minimal embedding provider contract for cache wrapping.
+ * Avoids circular import with `embedding/index.ts`.
+ */
 export interface EmbeddingProviderLike {
+  /** Model name included in cache keys. */
   readonly model: string;
+  /** Embed a single text string. */
   embed(text: string): Promise<Float32Array>;
+  /** Optional batch embed (cache checks each item before batching misses). */
   embedBatch?(texts: string[]): Promise<Float32Array[]>;
+  /** Validate provider connectivity and return embedding dimensions. */
   validate(): Promise<{ dimensions: number }>;
 }
 
+/** User-facing embedding cache configuration (constructor / options). */
 export interface EmbeddingCacheConfig {
-  /** Default true in 0.4 */
+  /** Enable cache (default `true` in 0.4+). */
   enabled?: boolean;
-  /** Lazy TTL expiry on read; default no expiry */
+  /** Lazy TTL expiry on read; default no expiry. */
   ttlMs?: number;
-  /** LRU eviction when set; default unbounded */
+  /** LRU eviction cap; default unbounded in-memory + durable store limits. */
   maxEntries?: number;
 }
 
+/** Normalized cache config after defaults are applied. */
 export interface ResolvedEmbeddingCacheConfig {
   enabled: boolean;
   ttlMs: number | null;
   maxEntries: number | null;
 }
 
+/**
+ * Resolve embedding cache config with SDK defaults.
+ *
+ * @param input - Optional partial config from `wolbarg({ embeddingCache })`.
+ */
 export function resolveEmbeddingCacheConfig(
   input?: EmbeddingCacheConfig,
 ): ResolvedEmbeddingCacheConfig {
@@ -37,27 +54,58 @@ export function resolveEmbeddingCacheConfig(
   };
 }
 
+/**
+ * Build a deterministic cache key from content and model name.
+ *
+ * @param content - Raw text that was embedded.
+ * @param model - Embedding model identifier.
+ */
 export function embeddingCacheKey(content: string, model: string): string {
   const hash = createHash("sha256").update(content, "utf8").digest("hex");
   return `${hash}:${model}`;
 }
 
+/**
+ * Pluggable durable / in-memory store for cached embedding vectors.
+ *
+ * Implement for Redis, S3, or other shared caches across processes.
+ */
 export interface EmbeddingCacheStore {
+  /** Lookup a cached vector; return `null` on miss or expiry. */
   get(cacheKey: string): Promise<Float32Array | null>;
+  /** Store a vector (may be write-behind). */
   set(cacheKey: string, model: string, vector: Float32Array): Promise<void>;
+  /** Update LRU timestamp for a key (optional optimization). */
   touch(cacheKey: string): Promise<void>;
+  /** Evict oldest entries when count exceeds `maxEntries`. */
   evictIfNeeded(maxEntries: number): Promise<void>;
 }
 
+/** Embedding provider wrapped with hit/miss statistics. */
 export interface CacheAwareEmbedding extends EmbeddingProviderLike {
+  /** Cache hits since construction or last {@link CacheAwareEmbedding.resetCacheStats}. */
   readonly cacheHits: number;
+  /** Cache misses in the same window. */
   readonly cacheMisses: number;
+  /** Reset hit/miss counters to zero. */
   resetCacheStats(): void;
 }
 
 /**
  * Wrap an embedding provider with a content+model cache.
- * Cache check happens per-item before batch assembly.
+ *
+ * Cache check happens per-item before batch assembly so repeated texts never
+ * hit the embedding API.
+ *
+ * @param provider - Underlying embedding provider.
+ * @param store - L1 + durable cache store.
+ * @param config - Resolved cache options from {@link resolveEmbeddingCacheConfig}.
+ * @returns Provider with identical API plus cache stats.
+ *
+ * @example
+ * ```ts
+ * const cached = withEmbeddingCache(embedding, sqliteStore, resolveEmbeddingCacheConfig());
+ * ```
  */
 export function withEmbeddingCache(
   provider: EmbeddingProviderLike,

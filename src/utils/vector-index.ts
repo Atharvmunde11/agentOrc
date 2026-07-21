@@ -10,6 +10,10 @@ export interface InMemoryHit {
   distance: number;
 }
 
+/**
+ * Contiguous in-memory vector index for blob backends (e.g. win32-arm64
+ * without sqlite-vec). Stores L2-normalized embeddings for O(n) top-k search.
+ */
 export class InMemoryVectorIndex {
   private readonly dims: number;
   private rowids: number[] = [];
@@ -17,21 +21,32 @@ export class InMemoryVectorIndex {
   private count = 0;
   private readonly rowidToSlot = new Map<number, number>();
 
+  /**
+   * @param dimensions - Embedding vector length.
+   * @param initialCapacity - Initial slot capacity (default `256`).
+   */
   constructor(dimensions: number, initialCapacity = 256) {
     this.dims = dimensions;
     this.data = new Float32Array(initialCapacity * dimensions);
   }
 
+  /** Number of indexed vectors. */
   get size(): number {
     return this.count;
   }
 
+  /** Remove all vectors from the index. */
   clear(): void {
     this.rowids.length = 0;
     this.rowidToSlot.clear();
     this.count = 0;
   }
 
+  /**
+   * Insert or replace a vector for `rowid` (L2-normalized internally).
+   * @param rowid - Memory table row identifier.
+   * @param embedding - Raw embedding vector.
+   */
   upsert(rowid: number, embedding: Float32Array): void {
     const existing = this.rowidToSlot.get(rowid);
     const slot =
@@ -67,6 +82,10 @@ export class InMemoryVectorIndex {
     }
   }
 
+  /**
+   * Remove a vector by `rowid`.
+   * @param rowid - Memory table row identifier.
+   */
   remove(rowid: number): void {
     const slot = this.rowidToSlot.get(rowid);
     if (slot === undefined) {
@@ -87,7 +106,12 @@ export class InMemoryVectorIndex {
     this.count = last;
   }
 
-  /** Top-k by cosine distance (1 - dot) assuming query is L2-normalized. */
+  /**
+   * Top-k by cosine distance (1 - dot) assuming query is L2-normalized.
+   *
+   * @param queryNormalized - L2-normalized query vector (use {@link normalizeEmbedding}).
+   * @param topK - Maximum hits to return.
+   */
   search(queryNormalized: Float32Array, topK: number): InMemoryHit[] {
     const n = this.count;
     if (n === 0 || topK <= 0) {
@@ -165,7 +189,12 @@ export class InMemoryVectorIndex {
   }
 }
 
-/** L2-normalize into a new Float32Array of exactly `dims` length. */
+/**
+ * L2-normalize an embedding into a new Float32Array of exactly `dims` length.
+ *
+ * @param embedding - Source vector (may be shorter than `dims`; padded with zeros).
+ * @param dims - Output dimensionality (defaults to `embedding.length`).
+ */
 export function normalizeEmbedding(
   embedding: Float32Array,
   dims = embedding.length,

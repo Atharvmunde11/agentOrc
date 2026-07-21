@@ -37,6 +37,12 @@ export interface MemoryImportResult {
   manifest?: ExportManifest;
 }
 
+/**
+ * Portable memory database import / export contract.
+ *
+ * Implement for S3, tarball, or remote backup targets. Built-in:
+ * {@link SqliteMemoryTransferProvider} (file copy + manifest).
+ */
 export interface MemoryTransferProvider {
   exportTo(
     path: string,
@@ -56,6 +62,7 @@ export interface MemoryTransferProvider {
   ): Promise<MemoryImportResult>;
 }
 
+/** SQLite file copy + JSON manifest export/import implementation. */
 export class SqliteMemoryTransferProvider implements MemoryTransferProvider {
   async exportTo(
     exportPath: string,

@@ -28,10 +28,14 @@ export class SqliteTelemetryProvider implements TelemetryProvider {
   private warnedQueueDrop = false;
   private warnedFlushFailure = false;
 
+  /**
+   * @param options.url - Path to the independent telemetry SQLite database file.
+   */
   constructor(options: SqliteTelemetryProviderOptions) {
     this.db = new SqliteEventDatabase({ url: options.url });
   }
 
+  /** Open the telemetry EventDatabase (lazy — also invoked on first emit). */
   async open(): Promise<void> {
     if (!this.openPromise) {
       this.openPromise = this.db.open();
@@ -40,6 +44,7 @@ export class SqliteTelemetryProvider implements TelemetryProvider {
     this.closed = false;
   }
 
+  /** Flush pending events and close the telemetry database. */
   async close(): Promise<void> {
     this.closed = true;
     await this.flush();
@@ -47,6 +52,11 @@ export class SqliteTelemetryProvider implements TelemetryProvider {
     this.openPromise = null;
   }
 
+  /**
+   * Enqueue a telemetry event for async persistence (never throws).
+   *
+   * @param event - Partial or complete {@link TelemetryEventInput}.
+   */
   emit(event: TelemetryEventInput): void {
     if (this.closed) {
       return;
@@ -65,6 +75,7 @@ export class SqliteTelemetryProvider implements TelemetryProvider {
     void this.scheduleFlush();
   }
 
+  /** Block until all queued events are written (or dropped on failure). */
   async flush(): Promise<void> {
     while (this.queue.length > 0 || this.flushing) {
       await this.scheduleFlush();
@@ -74,11 +85,13 @@ export class SqliteTelemetryProvider implements TelemetryProvider {
     }
   }
 
+  /** Query persisted telemetry events with filters and pagination. */
   async query(options: TelemetryQuery): Promise<TelemetryQueryResult> {
     await this.open();
     return this.db.query(options);
   }
 
+  /** Fetch a single telemetry event by id. */
   async getEvent(id: string): Promise<TelemetryEvent | null> {
     await this.open();
     return this.db.getEvent(id);

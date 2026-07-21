@@ -1,7 +1,10 @@
 /**
  * Prepared-statement SQL templates for the SQLite provider.
+ *
+ * Each property is a parameterized query string consumed by
+ * {@link SqliteStorageProvider} — not a public runtime API, but exported
+ * for tests, tooling, and custom SQLite adapters.
  */
-
 export const SQL = {
   getMeta: `SELECT value FROM Wolbarg_meta WHERE key = ?`,
   setMeta: `

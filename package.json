@@ -1,6 +1,6 @@
 {
   "name": "wolbarg",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Wolbarg — modular, provider-agnostic semantic memory SDK for AI agents. SQLite + PostgreSQL, optional graph memory (SQLite / Neo4j), hybrid search, ingest, and rerankers.",
   "license": "MIT",
   "author": {

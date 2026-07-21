@@ -1,5 +1,9 @@
 /**
- * Wolbarg — modular semantic memory SDK for AI agents (v0.3).
+ * Wolbarg — modular semantic memory SDK for AI agents (v0.5.5).
+ *
+ * Construct with {@link wolbarg} or `new Wolbarg(options)`. Pass provider
+ * **instances** (custom implementations) or **configs / factory helpers**
+ * for embedding, LLM, storage, graph, and optional plugins.
  *
  * @example
  * ```ts
@@ -11,6 +15,11 @@
  *   embedding: openaiEmbedding({
  *     apiKey: process.env.OPENAI_API_KEY!,
  *     model: "text-embedding-3-small",
+ *   }),
+ *   // Optional — required for compress() and rememberFromMessages({ mode: "extract" })
+ *   llm: openaiLlm({
+ *     apiKey: process.env.OPENAI_API_KEY!,
+ *     model: "gpt-4o-mini",
  *   }),
  *   telemetry: {
  *     enabled: true,
@@ -181,7 +190,14 @@ const warnLogger = new WolbargLogger("warn");
 let warnedHybridNoKeyword = false;
 let warnedRerankNoProvider = false;
 
+/**
+ * Main Wolbarg facade: remember / recall / ingest / graph / checkpoints.
+ *
+ * @typeParam HasLlm - `true` when constructed with an `llm` (enables
+ *   {@link Wolbarg.compress} at the type level).
+ */
 export class Wolbarg<HasLlm extends boolean = false> {
+  /** Compile-time marker: `true` when an LLM was configured at construction. */
   declare readonly __hasLlm: HasLlm;
 
   private initialized = false;
@@ -211,9 +227,39 @@ export class Wolbarg<HasLlm extends boolean = false> {
     resolveEmbeddingCacheConfig();
   private rawEmbedding: EmbeddingProvider | null = null;
 
+  /**
+   * Create a Wolbarg instance with an LLM (enables {@link Wolbarg.compress}).
+   *
+   * @param options - See {@link WolbargOptionsWithLlm}. `llm` may be a custom
+   *   {@link LlmProvider} (`{ model, complete, validate }`) or a config /
+   *   factory result such as {@link openaiLlm}.
+   */
   constructor(options: WolbargOptionsWithLlm);
+  /**
+   * Create a Wolbarg instance without an LLM (compress / extract mode unavailable).
+   *
+   * @param options - See {@link WolbargOptionsWithoutLlm}.
+   */
   constructor(options: WolbargOptionsWithoutLlm);
+  /**
+   * Empty constructor for the legacy {@link Wolbarg.init} flow.
+   * Prefer passing options to the constructor or {@link wolbarg}.
+   */
   constructor();
+  /**
+   * @param options - Full {@link WolbargOptions}. Key fields:
+   * - `organization` — namespace isolating memories in a shared DB
+   * - `database` / `storage` — SQLite/Postgres config **or** a custom
+   *   {@link StorageProvider} instance
+   * - `embedding` — {@link EmbeddingProvider} instance **or**
+   *   {@link EmbeddingConfig} / {@link openaiEmbedding} (etc.)
+   * - `llm` — optional {@link LlmProvider} or {@link LlmConfig} / {@link openaiLlm};
+   *   required for {@link Wolbarg.compress} and extract-mode
+   *   {@link Wolbarg.rememberFromMessages}
+   * - `graph`, `telemetry`, `reranker`, `keywordSearch`, `ocr`, `vision`,
+   *   `compression`, `chunking`, `retrieval`, `concurrency`, `embeddingCache`,
+   *   `memory.dedupe` — optional plugins / tuning
+   */
   constructor(options?: WolbargOptions) {
     this.telemetry = new TelemetryEmitter(null, { enabled: false, level: "off" });
 
@@ -296,6 +342,12 @@ export class Wolbarg<HasLlm extends boolean = false> {
 
   /**
    * Backwards-compatible initialization (v0.1 API).
+   * Prefer constructing with options + {@link Wolbarg.ready} instead.
+   *
+   * @param options - Organization, database, embedding, and optional LLM config.
+   * @returns Resolves when storage is open and the vector schema is ready.
+   * @throws {InitializationError} If already initialized.
+   * @throws {ConfigurationError} | {ValidationError} On invalid options.
    */
   async init(options: InitOptions): Promise<void> {
     if (this.initialized || this.storage) {
@@ -333,7 +385,14 @@ export class Wolbarg<HasLlm extends boolean = false> {
     await this.ready();
   }
 
-  /** Ensure storage (and optional telemetry) are open. */
+  /**
+   * Open storage, optional telemetry / checkpoint / graph providers, wrap the
+   * embedding cache, and probe embedding dimensions. Safe to call multiple times;
+   * concurrent callers share one boot promise.
+   *
+   * @returns Resolves when the instance is ready for remember/recall.
+   * @throws {InitializationError} If neither constructor options nor {@link init} were used.
+   */
   async ready(): Promise<void> {
     if (this.initialized) {
       return;
@@ -350,6 +409,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /** Internal boot sequence invoked by {@link Wolbarg.ready}. */
   private async boot(): Promise<void> {
     if (!this.storage || !this.embedding || !this.organization) {
       throw new InitializationError(
@@ -443,7 +503,17 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
-  /** Store a semantic memory for an agent (may upsert when dedupe is enabled). */
+  /**
+   * Store a semantic memory for an agent. Embeds `content.text`, writes the row,
+   * and may **upsert** an existing active memory when dedupe is enabled
+   * (constructor `memory.dedupe` or per-call `options.dedupe`).
+   *
+   * @param options - Agent id, text content, optional metadata / dedupe overrides.
+   *   See {@link RememberOptions}.
+   * @returns The stored record plus `action` (`"created"` | `"updated"`).
+   * @throws {ValidationError} On empty agent/content.
+   * @throws {InitializationError} If not configured / ready.
+   */
   async remember(options: RememberOptions): Promise<RememberResult> {
     const trace = this.telemetry.start("remember");
     try {
@@ -466,7 +536,15 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
-  /** Batch remember — sequential when dedupe enabled; otherwise one TX batch. */
+  /**
+   * Remember many memories in one call. Runs sequentially when any item (or the
+   * global config) enables dedupe; otherwise embeds in batch and inserts in one
+   * transaction for throughput.
+   *
+   * @param items - Non-empty list of {@link RememberOptions}.
+   * @returns One {@link RememberResult} per input, same order.
+   * @throws {ValidationError} If `items` is empty or an entry is invalid.
+   */
   async rememberBatch(items: RememberOptions[]): Promise<RememberResult[]> {
     const parent = this.telemetry.start("rememberBatch");
     try {
@@ -600,7 +678,15 @@ export class Wolbarg<HasLlm extends boolean = false> {
    * **Experimental** until 1.0 — API shape may change.
    *
    * - `mode: "raw"` (default) — remember user message text (no LLM).
-   * - `mode: "extract"` — require configured `llm`; extract atomic facts then remember each.
+   * - `mode: "extract"` — requires configured `llm`; extracts atomic facts then
+   *   remembers each. Pass a custom {@link LlmProvider} or {@link openaiLlm}
+   *   in the constructor.
+   *
+   * @param messages - Conversation turns (`role` + `content`).
+   * @param options - Agent, mode, optional metadata/dedupe. See
+   *   {@link RememberFromMessagesOptions}.
+   * @returns One {@link RememberResult} per remembered fact/message.
+   * @throws {ProviderNotConfiguredError} When `mode: "extract"` but no `llm` was configured.
    */
   async rememberFromMessages(
     messages: ConversationMessage[],
@@ -679,7 +765,14 @@ export class Wolbarg<HasLlm extends boolean = false> {
   }
 
   /**
-   * Update an existing memory by id (re-embeds when content changes).
+   * Update an existing memory by id. Re-embeds when `content` changes; merges
+   * metadata when provided.
+   *
+   * @param options.id - Memory id to update.
+   * @param options.content - Optional new `{ text }` (triggers re-embed + content hash).
+   * @param options.metadata - Optional metadata merged onto the existing record.
+   * @returns Updated record with `action: "updated"`.
+   * @throws {MemoryNotFoundError} If the id is unknown in this organization.
    */
   async update(options: {
     id: string;
@@ -763,10 +856,18 @@ export class Wolbarg<HasLlm extends boolean = false> {
   }
 
   /**
-   * Subscribe to memory change events.
+   * Subscribe to memory change events (remember / update / forget / compress / clear).
    *
    * **SQLite:** delivers events only within this Node.js process.
    * A second process writing the same `memory.db` will not notify subscribers here.
+   *
+   * **Postgres:** uses LISTEN/NOTIFY across processes (lazy connection on first subscribe).
+   *
+   * @param filter - Scope by `organization` (defaults to this instance’s org),
+   *   optional `agent`, and optional `events` allow-list. See {@link SubscribeFilter}.
+   * @param callback - Invoked with each {@link MemoryChangeEvent}.
+   * @returns {@link Unsubscribe} function — call to stop receiving events.
+   * @throws {ValidationError} If organization cannot be resolved.
    */
   subscribe(
     filter: SubscribeFilter,
@@ -804,6 +905,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     return this.subscribeBackend.subscribe(normalized, callback);
   }
 
+  /** Broadcast a memory change event to in-process or Postgres NOTIFY subscribers. */
   private emitChange(event: MemoryChangeEvent): void {
     try {
       if (this.storage instanceof PostgresStorageProvider) {
@@ -1060,6 +1162,17 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Find the best active near-duplicate memory for upsert (cosine similarity ≥ threshold).
+   *
+   * @param storage - Open storage provider.
+   * @param organization - Org namespace.
+   * @param agent - Agent scope for the search.
+   * @param vector - Embedding of the candidate text.
+   * @param threshold - Minimum similarity (0–1) to treat as a duplicate.
+   * @param limit - Max vector candidates to inspect.
+   * @returns Matching memory row, or `null` if none qualify.
+   */
   private async findNearDuplicate(
     storage: StorageProvider,
     organization: string,
@@ -1100,10 +1213,20 @@ export class Wolbarg<HasLlm extends boolean = false> {
   }
 
   /**
-   * Semantic / hybrid search over stored memories.
+   * Semantic (and optional hybrid / MMR / rerank / graph) search over stored memories.
    * Pass `{ explain: true }` for enriched ranking diagnostics.
+   *
+   * @param options - Query text plus optional `topK` (default 5), `threshold`,
+   *   `filter`, `hybrid`, `mmr`, `rerank`, `includeGraph`, `explain`.
+   *   See {@link RecallOptions}.
+   * @returns Ranked {@link RecallResult}[] normally, or {@link RecallExplainResponse}
+   *   when `explain: true`.
    */
   async recall(options: RecallOptions & { explain: true }): Promise<RecallExplainResponse>;
+  /**
+   * @param options - Recall options with `explain` omitted or `false`.
+   * @returns Ranked memory hits.
+   */
   async recall(options: RecallOptions & { explain?: false }): Promise<RecallResult[]>;
   async recall(options: RecallOptions): Promise<RecallResult[] | RecallExplainResponse>;
   async recall(options: RecallOptions): Promise<RecallResult[] | RecallExplainResponse> {
@@ -1471,7 +1594,13 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
-  /** Batch recall — parent event + child traces. */
+  /**
+   * Run multiple recalls sequentially under one parent telemetry span.
+   *
+   * @param queries - Non-empty list of recall options (`explain` is forced off).
+   * @returns One hit array per query, same order.
+   * @throws {ValidationError} If `queries` is empty.
+   */
   async recallBatch(
     queries: Array<Omit<RecallOptions, "explain">>,
   ): Promise<RecallResult[][]> {
@@ -1508,6 +1637,17 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Compress the newest active memories for an agent into one summary memory
+   * and archive the sources. Requires an `llm` (or custom `compression`) at
+   * construction — typed only on `Wolbarg<true>`.
+   *
+   * @param options - `agent` required; optional `limit` (default 50, min 2).
+   *   See {@link CompressOptions}.
+   * @returns Summary record plus archived source ids. See {@link CompressResult}.
+   * @throws {ProviderNotConfiguredError} If no LLM/compression provider is set.
+   * @throws {ValidationError} If fewer than 2 active memories exist for the agent.
+   */
   async compress(
     this: Wolbarg<true>,
     options: CompressOptions,
@@ -1515,7 +1655,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     return this.runCompress(options);
   }
 
-  /** @internal */
+  /** @internal Runs compress for both typed and untyped call sites. */
   private async runCompress(options: CompressOptions): Promise<CompressResult> {
     const trace = this.telemetry.start("compress");
     try {
@@ -1614,6 +1754,16 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Ingest a document (path, URL, Buffer, or text), chunk it, embed chunks, and
+   * store each as a memory. Images use optional `ocr` / `vision` providers from
+   * the constructor.
+   *
+   * @param options - `agent`, `source`, optional chunking overrides / metadata.
+   *   See {@link IngestOptions}.
+   * @returns Counts and created memory ids. See {@link IngestResult}.
+   * @throws {ValidationError} If no text can be extracted or chunking yields zero chunks.
+   */
   async ingest(options: IngestOptions): Promise<IngestResult> {
     const trace = this.telemetry.start("ingest");
     try {
@@ -1803,8 +1953,14 @@ export class Wolbarg<HasLlm extends boolean = false> {
   }
 
   /**
-   * Link two memories in the optional graph layer.
-   * Throws {@link ProviderNotConfiguredError} when no graph provider is set.
+   * Link two memories in the optional graph layer with a typed relation edge.
+   *
+   * @param fromId - Source memory id.
+   * @param toId - Target memory id.
+   * @param relation - Edge label (e.g. `"supports"`, `"caused_by"`).
+   * @param metadata - Optional edge properties stored on the graph provider.
+   * @throws {ProviderNotConfiguredError} When no `graph` was configured.
+   * @throws {ValidationError} On empty ids/relation.
    */
   async linkMemories(
     fromId: string,
@@ -1840,8 +1996,13 @@ export class Wolbarg<HasLlm extends boolean = false> {
 
   /**
    * Traverse related memories via the optional graph layer.
-   * Throws {@link ProviderNotConfiguredError} when no graph provider is set.
-   * Results are re-hydrated from SQL storage when available.
+   * Neighbor stubs from the graph are re-hydrated from SQL storage when available.
+   *
+   * @param memoryId - Seed memory id.
+   * @param options - Optional `relation`, `direction`, `depth`, `limit`.
+   *   See {@link GetRelatedOptions}.
+   * @returns Related {@link MemoryRecord} list (may be empty).
+   * @throws {ProviderNotConfiguredError} When no `graph` was configured.
    */
   async getRelated(
     memoryId: string,
@@ -1883,6 +2044,14 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Delete memories by id or by agent filter. Cascades graph nodes/edges when
+   * a graph provider is configured.
+   *
+   * @param options - Either `{ id }` or `{ filter: { agent } }`. See {@link ForgetOptions}.
+   * @returns Number of memories deleted.
+   * @throws {ValidationError} If neither `id` nor `filter.agent` is provided.
+   */
   async forget(options: ForgetOptions): Promise<number> {
     const trace = this.telemetry.start("forget");
     try {
@@ -1959,6 +2128,13 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Return the audit/history timeline for a single memory.
+   *
+   * @param options - `{ id }` of the memory. See {@link HistoryOptions}.
+   * @returns Memory record plus ordered {@link HistoryEvent} list.
+   * @throws {MemoryNotFoundError} If the id is unknown.
+   */
   async history(options: HistoryOptions): Promise<HistoryResult> {
     const trace = this.telemetry.start("history");
     try {
@@ -1989,6 +2165,11 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Aggregate counts for this organization (active / archived / agents / etc.).
+   *
+   * @returns {@link StatsResult} snapshot.
+   */
   async stats(): Promise<StatsResult> {
     const trace = this.telemetry.start("stats");
     try {
@@ -2018,6 +2199,13 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Delete all memories for this organization (optionally scoped by agent).
+   * Cascades graph cleanup when a graph provider is configured.
+   *
+   * @param options - Optional `{ agent }` scope. See {@link ClearOptions}.
+   * @returns Number of memories deleted.
+   */
   async clear(options: ClearOptions): Promise<number> {
     const trace = this.telemetry.start("clear");
     try {
@@ -2049,7 +2237,16 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
-  /** Create an immutable named checkpoint of the memory database. */
+  /**
+   * Create an immutable named checkpoint of the file-backed SQLite memory DB
+   * (and SQLite graph snapshot when applicable).
+   *
+   * @param name - Checkpoint name (unique).
+   * @param options - Optional metadata. See {@link CheckpointOptions}.
+   * @returns {@link CheckpointInfo} for the new checkpoint.
+   * @throws {ProviderNotConfiguredError} Without a checkpoint provider / file DB.
+   * @throws {GraphCheckpointNotSupportedError} For Neo4j graph backends.
+   */
   async checkpoint(
     name: string,
     options?: CheckpointOptions,
@@ -2085,7 +2282,12 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
-  /** Restore the memory database from a named checkpoint. */
+  /**
+   * Restore the memory database from a named checkpoint (replaces the live DB file).
+   *
+   * @param name - Checkpoint name previously created with {@link Wolbarg.checkpoint}.
+   * @returns {@link CheckpointInfo} of the restored checkpoint.
+   */
   async rollback(name: string): Promise<CheckpointInfo> {
     const trace = this.telemetry.start("rollback");
     let storageClosed = false;
@@ -2139,6 +2341,12 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Delete a named checkpoint from disk / the checkpoint store.
+   *
+   * @param name - Checkpoint name.
+   * @returns `true` if a checkpoint was removed.
+   */
   async deleteCheckpoint(name: string): Promise<boolean> {
     const trace = this.telemetry.start("deleteCheckpoint");
     try {
@@ -2166,6 +2374,11 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * List all known checkpoints for this instance.
+   *
+   * @returns Array of {@link CheckpointInfo} (may be empty).
+   */
   async listCheckpoints(): Promise<CheckpointInfo[]> {
     const trace = this.telemetry.start("listCheckpoints");
     try {
@@ -2185,6 +2398,12 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /**
+   * Look up a single checkpoint by name.
+   *
+   * @param name - Checkpoint name.
+   * @returns {@link CheckpointInfo} or `null` if missing.
+   */
   async getCheckpoint(name: string): Promise<CheckpointInfo | null> {
     const trace = this.telemetry.start("getCheckpoint");
     try {
@@ -2205,7 +2424,13 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
-  /** Export the memory database to a portable SQLite + manifest bundle. */
+  /**
+   * Export the memory database to a portable SQLite + manifest bundle
+   * (includes SQLite graph sidecar when applicable).
+   *
+   * @param exportPath - Destination file path for the export bundle.
+   * @returns {@link ExportResult} with path, size, and timestamp.
+   */
   async export(exportPath: string): Promise<ExportResult> {
     const trace = this.telemetry.start("export");
     try {
@@ -2239,7 +2464,13 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
-  /** Import a previously exported memory database, replacing the current file. */
+  /**
+   * Import a previously exported memory database, replacing the current file.
+   * Closes and reopens storage around the swap.
+   *
+   * @param exportPath - Path to a bundle produced by {@link Wolbarg.export}.
+   * @returns {@link ImportResult} with restored path and timestamp.
+   */
   async import(exportPath: string): Promise<ImportResult> {
     const trace = this.telemetry.start("import");
     let storageClosed = false;
@@ -2293,12 +2524,18 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
-  /** Flush pending telemetry (useful in tests). */
+  /**
+   * Flush pending telemetry writes (useful in tests / before process exit).
+   *
+   * @returns Resolves when the telemetry provider has flushed.
+   */
   async flushTelemetry(): Promise<void> {
     await this.telemetry.flush();
   }
 
-  /** Session id for this SDK instance (telemetry traces). */
+  /**
+   * Session id for this SDK instance (attached to telemetry traces and change events).
+   */
   get sessionId(): string {
     return this.telemetry.sessionId;
   }
@@ -2321,6 +2558,12 @@ export class Wolbarg<HasLlm extends boolean = false> {
     return fn();
   }
 
+  /**
+   * Close storage, graph, telemetry, checkpoints, and subscribe backends.
+   * The instance can be discarded afterward; construct a new one to reopen.
+   *
+   * @returns Resolves when all providers have closed (errors are swallowed per-provider).
+   */
   async close(): Promise<void> {
     if (this.storage) {
       this.telemetry.emitShutdown(this.storage.name);
@@ -2346,10 +2589,12 @@ export class Wolbarg<HasLlm extends boolean = false> {
     this.initialized = false;
   }
 
+  /** Whether {@link Wolbarg.ready} / {@link Wolbarg.init} has completed successfully. */
   get isInitialized(): boolean {
     return this.initialized;
   }
 
+  /** Ensure {@link Wolbarg.ready} completed and core providers are available. */
   private async requireReady(): Promise<ReadyState> {
     await this.ready();
     if (
@@ -2369,6 +2614,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     };
   }
 
+  /** Reject embeddings whose dimensionality differs from the initialized model. */
   private assertEmbeddingDimensions(dimensions: number): void {
     if (
       this.embeddingDimensions !== null &&
@@ -2380,6 +2626,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /** Return the configured checkpoint provider or throw {@link ProviderNotConfiguredError}. */
   private requireCheckpointProvider(): CheckpointProvider {
     if (!this.checkpointProvider) {
       throw new ProviderNotConfiguredError(
@@ -2391,6 +2638,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     return this.checkpointProvider;
   }
 
+  /** Return the configured graph provider or throw with a setup hint for `method`. */
   private requireGraph(method: string): GraphProvider {
     if (!this.graph) {
       throw new ProviderNotConfiguredError(
@@ -2402,6 +2650,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     return this.graph;
   }
 
+  /** Throw when graph checkpoint pairing is requested on a non-file-backed graph backend. */
   private assertGraphCheckpointSupported(operation: string): void {
     if (!this.graph) return;
     if (!this.graph.supportsFileSnapshot()) {
@@ -2409,16 +2658,19 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /** Directory path where a graph file snapshot is stored alongside a memory checkpoint. */
   private graphSnapshotDir(alongsidePath: string): string {
     return `${alongsidePath}.graph`;
   }
 
+  /** Close the graph provider before copying files; returns whether a close occurred. */
   private async closeGraphForSnapshot(): Promise<boolean> {
     if (!this.graph || !this.graph.supportsFileSnapshot()) return false;
     await this.graph.close();
     return true;
   }
 
+  /** Copy the SQLite graph database next to a memory checkpoint directory. */
   private async snapshotGraphAlongside(
     alongsidePath: string,
     operation: string,
@@ -2463,6 +2715,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /** Restore a graph file snapshot written by {@link snapshotGraphAlongside}. */
   private async restoreGraphAlongside(
     alongsidePath: string,
     operation: string,
@@ -2491,6 +2744,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     }
   }
 
+  /** Run graph traversal then re-hydrate stub records from storage when rows exist. */
   private async hydrateRelated(
     memoryId: string,
     options?: GetRelatedOptions,
@@ -2510,6 +2764,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     return out;
   }
 
+  /** Resolve the on-disk SQLite memory database path (throws for Postgres / `:memory:`). */
   private requireMemoryDbPath(): string {
     if (this.storage && !(this.storage instanceof SqliteStorageProvider)) {
       throw new ConfigurationError(
@@ -2535,11 +2790,41 @@ export class Wolbarg<HasLlm extends boolean = false> {
   }
 }
 
-/** Preferred v0.3 entry — re-exported from factories as well. */
+/**
+ * Preferred factory — equivalent to `new Wolbarg(options)`.
+ *
+ * @param options - Full {@link WolbargOptions}. Pass custom provider instances
+ *   (`embedding`, `llm`, `storage`, `graph`, …) or factory helpers
+ *   (`openaiEmbedding`, `openaiLlm`, `sqliteGraph`, …). See constructor docs
+ *   on {@link Wolbarg} for every option field.
+ * @returns A configured {@link Wolbarg} instance (call {@link Wolbarg.ready} before use).
+ *
+ * @example
+ * ```ts
+ * const memory = wolbarg({
+ *   organization: "acme",
+ *   database: { provider: "sqlite", url: "./memory.db" },
+ *   embedding: openaiEmbedding({
+ *     apiKey: process.env.OPENAI_API_KEY!,
+ *     model: "text-embedding-3-small",
+ *   }),
+ *   llm: openaiLlm({
+ *     apiKey: process.env.OPENAI_API_KEY!,
+ *     model: "gpt-4o-mini",
+ *   }),
+ * });
+ * await memory.ready();
+ * ```
+ */
 export function wolbarg(options: WolbargOptions): Wolbarg {
   return new Wolbarg(options as never);
 }
 
+/**
+ * Extract string tags from memory metadata for telemetry (`tags` string or string[]).
+ * @param metadata - Arbitrary metadata object.
+ * @returns Normalized tag list or `null`.
+ */
 function telemetryTags(metadata: Record<string, unknown>): string[] | null {
   const value = metadata.tags;
   if (typeof value === "string") {
@@ -2555,11 +2840,19 @@ function telemetryTags(metadata: Record<string, unknown>): string[] | null {
   return null;
 }
 
+/**
+ * @param agents - Agent ids from a result set.
+ * @returns The shared agent id if every entry matches, otherwise `null`.
+ */
 function commonAgent(agents: string[]): string | null {
   const first = agents[0];
   return first && agents.every((agent) => agent === first) ? first : null;
 }
 
+/**
+ * @param metadata - Metadata objects from recalled memories.
+ * @returns Union of all tags, or `null` if none.
+ */
 function commonTags(metadata: Array<Record<string, unknown>>): string[] | null {
   const tags = new Set<string>();
   for (const item of metadata) {

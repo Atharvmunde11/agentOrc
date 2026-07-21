@@ -5,16 +5,24 @@
 import { createHash } from "node:crypto";
 
 /**
- * Normalize content for exact-match dedupe:
+ * Normalize memory content for exact-match dedupe:
  * 1. Unicode NFC
  * 2. Trim
  * 3. Collapse internal whitespace runs to a single space
  * 4. Do NOT case-fold
+ *
+ * @param text - Raw memory text.
+ * @returns Normalized string used for hashing and comparison.
  */
 export function normalizeMemoryContent(text: string): string {
   return text.normalize("NFC").trim().replace(/\s+/g, " ");
 }
 
+/**
+ * SHA-256 hash of normalized memory content for write-time exact dedupe.
+ *
+ * @param text - Raw memory text (normalized internally).
+ */
 export function hashMemoryContent(text: string): string {
   const normalized = normalizeMemoryContent(text);
   return createHash("sha256").update(normalized, "utf8").digest("hex");
@@ -38,6 +46,7 @@ export interface ResolvedMemoryDedupeConfig {
   nearCandidateLimit: number;
 }
 
+/** Default resolved dedupe settings when dedupe is disabled or omitted. */
 export const DEFAULT_MEMORY_DEDUPE: ResolvedMemoryDedupeConfig = {
   enabled: false,
   strategy: "exact-or-near",
@@ -45,6 +54,11 @@ export const DEFAULT_MEMORY_DEDUPE: ResolvedMemoryDedupeConfig = {
   nearCandidateLimit: 8,
 };
 
+/**
+ * Resolve dedupe config from constructor options or per-call override.
+ *
+ * @param input - `true`/`false`, partial config, or `undefined` for defaults.
+ */
 export function resolveMemoryDedupeConfig(
   input?: boolean | MemoryDedupeConfig,
 ): ResolvedMemoryDedupeConfig {
@@ -63,6 +77,12 @@ export function resolveMemoryDedupeConfig(
   };
 }
 
+/**
+ * Shallow-merge incoming metadata onto existing keys (incoming wins).
+ *
+ * @param existing - Stored metadata object.
+ * @param incoming - New metadata from remember/update.
+ */
 export function mergeMemoryMetadata(
   existing: Record<string, unknown>,
   incoming: Record<string, unknown>,

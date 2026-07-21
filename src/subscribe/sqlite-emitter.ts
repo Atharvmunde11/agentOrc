@@ -38,6 +38,7 @@ function matchesFilter(
   );
 }
 
+/** In-process {@link SubscribeBackend} for SQLite (same Node.js process only). */
 export class SqliteSubscribeEmitter implements SubscribeBackend {
   private readonly emitter = new EventEmitter();
   private readonly subscriptions = new Map<number, Subscription>();
@@ -64,6 +65,13 @@ export class SqliteSubscribeEmitter implements SubscribeBackend {
     });
   }
 
+  /**
+   * Register a filtered callback for in-process memory change events.
+   *
+   * @param filter - Organization / agent / event-type filter.
+   * @param callback - Invoked synchronously on each matching emit.
+   * @returns Unsubscribe function.
+   */
   subscribe(
     filter: SubscribeFilter,
     callback: MemoryChangeCallback,
@@ -78,6 +86,7 @@ export class SqliteSubscribeEmitter implements SubscribeBackend {
     };
   }
 
+  /** Emit a memory change event to registered subscribers. */
   emit(event: MemoryChangeEvent): void {
     if (this.closed) {
       return;
@@ -85,6 +94,7 @@ export class SqliteSubscribeEmitter implements SubscribeBackend {
     this.emitter.emit("change", event);
   }
 
+  /** Remove all listeners and mark the emitter closed. */
   async close(): Promise<void> {
     this.closed = true;
     this.subscriptions.clear();

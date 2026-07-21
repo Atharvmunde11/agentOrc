@@ -1,5 +1,9 @@
 /**
- * Database module — re-exports storage for backwards compatibility.
+ * Database module — re-exports {@link StorageProvider} under the legacy `database` path.
+ *
+ * Prefer importing from `wolbarg` / `./storage/index.js` in new code.
+ *
+ * @packageDocumentation
  */
 
 export {

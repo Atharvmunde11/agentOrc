@@ -34,21 +34,33 @@ export class SqliteCheckpointProvider implements CheckpointProvider {
   private readonly directory: string;
   private ready = false;
 
+  /**
+   * @param options.directory - Folder for `.json` metadata and `.db` snapshot files.
+   */
   constructor(options?: SqliteCheckpointProviderOptions) {
     this.directory =
       options?.directory ??
       path.resolve(process.cwd(), ".wolbarg", "checkpoints");
   }
 
+  /** Ensure the checkpoint directory exists. */
   async open(): Promise<void> {
     fs.mkdirSync(this.directory, { recursive: true });
     this.ready = true;
   }
 
+  /** Mark the provider closed (does not delete snapshots). */
   async close(): Promise<void> {
     this.ready = false;
   }
 
+  /**
+   * Create an immutable SQLite backup of `sourcePath` under a unique name.
+   *
+   * @param name - Checkpoint label (must not already exist).
+   * @param sourcePath - Live memory database path to snapshot.
+   * @param options.description - Optional human-readable description stored in metadata.
+   */
   async checkpoint(
     name: string,
     sourcePath: string,
@@ -109,6 +121,12 @@ export class SqliteCheckpointProvider implements CheckpointProvider {
     return meta;
   }
 
+  /**
+   * Restore a named checkpoint over `targetPath` (replaces WAL/SHM side files).
+   *
+   * @param name - Existing checkpoint name.
+   * @param targetPath - Live memory database path to overwrite.
+   */
   async rollback(name: string, targetPath: string): Promise<CheckpointMeta> {
     this.requireReady();
     const meta = await this.getCheckpoint(name);
@@ -134,6 +152,7 @@ export class SqliteCheckpointProvider implements CheckpointProvider {
     return meta;
   }
 
+  /** Delete checkpoint metadata and snapshot files for `name`. */
   async deleteCheckpoint(name: string): Promise<boolean> {
     this.requireReady();
     const metaPath = this.metaPath(name);
@@ -150,6 +169,7 @@ export class SqliteCheckpointProvider implements CheckpointProvider {
     return removed;
   }
 
+  /** List all checkpoints sorted by creation time. */
   async listCheckpoints(): Promise<CheckpointMeta[]> {
     this.requireReady();
     if (!fs.existsSync(this.directory)) {
@@ -170,6 +190,7 @@ export class SqliteCheckpointProvider implements CheckpointProvider {
     return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
+  /** Load checkpoint metadata by name, or `null` if missing / corrupt. */
   async getCheckpoint(name: string): Promise<CheckpointMeta | null> {
     this.requireReady();
     const metaPath = this.metaPath(name);

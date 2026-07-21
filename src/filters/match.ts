@@ -49,7 +49,15 @@ function compare(value: unknown, op: MetadataComparison): boolean {
   return false;
 }
 
-/** Evaluate a metadata filter against an opaque metadata object. */
+/**
+ * Evaluate a metadata filter against an in-memory metadata object.
+ *
+ * Used as fallback when SQL push-down is unavailable or for post-filtering.
+ *
+ * @param metadata - Opaque memory metadata record.
+ * @param filter - {@link MetadataFilter} AST to evaluate.
+ * @returns `true` when the metadata satisfies the filter.
+ */
 export function matchesMetadata(
   metadata: MemoryMetadata,
   filter: MetadataFilter,

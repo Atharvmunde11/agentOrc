@@ -215,6 +215,7 @@ const BULK_CHUNK_NO_HNSW = 500;
 const BULK_CHUNK_WITH_HNSW = 250;
 const COPY_BATCH_THRESHOLD = 48;
 
+/** PostgreSQL + pgvector {@link StorageProvider} (`pg` optional peer). */
 export class PostgresStorageProvider implements StorageProvider {
   readonly name = "postgres";
 
@@ -239,6 +240,9 @@ export class PostgresStorageProvider implements StorageProvider {
   private insertFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private insertFlushInFlight = 0;
 
+  /**
+   * @param options - Connection string, pool size, and durability flags.
+   */
   constructor(options: PostgresProviderOptions) {
     this.maxPoolSize = options.maxPoolSize ?? 64;
     this.durableWrites = options.durableWrites !== false;
@@ -249,6 +253,7 @@ export class PostgresStorageProvider implements StorageProvider {
     );
   }
 
+  /** Current pg pool occupancy stats (for diagnostics / subscribe setup). */
   getPoolStats(): {
     max: number;
     total: number;
@@ -269,6 +274,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return this.pool;
   }
 
+  /** Open the connection pool and run migrations. */
   async open(): Promise<void> {
     let PoolCtor: new (config: Record<string, unknown>) => PgPool;
     try {
@@ -324,6 +330,7 @@ export class PostgresStorageProvider implements StorageProvider {
     }
   }
 
+  /** Drain coalesced inserts and end the connection pool. */
   async close(): Promise<void> {
     if (this.insertFlushTimer) {
       clearTimeout(this.insertFlushTimer);
@@ -374,6 +381,11 @@ export class PostgresStorageProvider implements StorageProvider {
     await this.ensureHnswIndex();
   }
 
+  /**
+   * Create pgvector tables and HNSW index for the given dimensionality.
+   *
+   * @param dimensions - Embedding length from the configured model.
+   */
   async ensureVectorSchema(dimensions: number): Promise<void> {
     const existing = await this.getEmbeddingDimensions();
     if (existing !== null && existing !== dimensions) {
@@ -443,6 +455,11 @@ export class PostgresStorageProvider implements StorageProvider {
   }
 
   /** Cross-process subscribe: NOTIFY after a committed write. */
+  /**
+   * Issue `pg_notify` for cross-process {@link subscribe} delivery.
+   *
+   * @param event - Memory change payload (IDs + metadata only).
+   */
   async notifyChange(event: MemoryChangeEvent): Promise<void> {
     await notifyMemoryChange(this.requirePool(), event);
   }
@@ -450,6 +467,7 @@ export class PostgresStorageProvider implements StorageProvider {
    * Soft reset for a single organization. Drops HNSW only when the embeddings
    * table is empty so other corpora on a shared bench DB stay intact.
    */
+  /** Delete all rows for an organization (dev / test helper). */
   async resetOrganization(organization: string): Promise<void> {
     await this.query(`DELETE FROM memories WHERE organization = $1`, [
       organization,
@@ -468,6 +486,7 @@ export class PostgresStorageProvider implements StorageProvider {
   /**
    * Wipe all Wolbarg tables (explicit opt-in). Prefer {@link resetOrganization}.
    */
+  /** Truncate all Wolbarg tables (dev / test helper). */
   async wipeAllData(): Promise<void> {
     await this.query(`TRUNCATE TABLE memories CASCADE`).catch(() => undefined);
     await this.query(
@@ -534,6 +553,7 @@ export class PostgresStorageProvider implements StorageProvider {
     }
   }
 
+  /** @inheritdoc StorageProvider.getEmbeddingDimensions */
   async getEmbeddingDimensions(): Promise<number | null> {
     const result = await this.query(
       `SELECT value FROM Wolbarg_meta WHERE key = $1`,
@@ -547,6 +567,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
+  /** @inheritdoc StorageProvider.setEmbeddingDimensions */
   async setEmbeddingDimensions(dimensions: number): Promise<void> {
     await this.query(
       `INSERT INTO Wolbarg_meta (key, value) VALUES ($1, $2)
@@ -556,6 +577,7 @@ export class PostgresStorageProvider implements StorageProvider {
     this.vectorDimensions = dimensions;
   }
 
+  /** Insert a single memory row (coalesced under concurrent writers). */
   async insertMemory(input: InsertMemoryInput): Promise<MemoryRow> {
     this.requireVectorReady();
 
@@ -659,6 +681,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return this.insertOneBlob(input);
   }
 
+  /** Batch insert via unnest / COPY paths with optional HNSW deferral. */
   async insertMemoriesBatch(inputs: InsertMemoryInput[]): Promise<MemoryRow[]> {
     if (inputs.length === 0) {
       return [];
@@ -832,6 +855,7 @@ export class PostgresStorageProvider implements StorageProvider {
     });
   }
 
+  /** Update memory content, metadata, embedding, and content hash. */
   async updateMemory(input: UpdateMemoryInput): Promise<MemoryRow | null> {
     return this.withTransaction(async () => {
       const existing = await this.getMemoryById(input.id, input.organization);
@@ -873,6 +897,7 @@ export class PostgresStorageProvider implements StorageProvider {
     });
   }
 
+  /** Find an active memory by org, agent, and content hash (dedupe). */
   async findActiveByContentHash(
     organization: string,
     agent: string,
@@ -890,6 +915,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return row ? this.mapRow(row) : null;
   }
 
+  /** Fetch a memory row by UUID within an organization. */
   async getMemoryById(id: string, organization: string): Promise<MemoryRow | null> {
     const result = await this.query(
       `SELECT id, organization, agent, content_text, metadata_json,
@@ -901,6 +927,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return row ? this.mapRow(row) : null;
   }
 
+  /** Fetch a memory row by internal rowid within an organization. */
   async getMemoryByRowid(rowid: number, organization: string): Promise<MemoryRow | null> {
     const result = await this.query(
       `SELECT m.id, m.organization, m.agent, m.content_text, m.metadata_json,
@@ -915,6 +942,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return row ? this.mapRow(row) : null;
   }
 
+  /** Batch-fetch memory rows by rowids within an organization. */
   async getMemoriesByRowids(
     rowids: number[],
     organization: string,
@@ -941,6 +969,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return out;
   }
 
+  /** List memories matching repository filters with optional limit. */
   async listMemories(filter: RepositoryFilter, limit?: number): Promise<MemoryRow[]> {
     const want =
       limit !== undefined ? limit : filter.metadata ? 10_000 : undefined;
@@ -1008,6 +1037,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return rows;
   }
 
+  /** Scan memories matching metadata filters. */
   async searchByMetadata(
     filter: RepositoryFilter,
     limit?: number,
@@ -1015,6 +1045,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return this.listMemories(filter, limit);
   }
 
+  /** Full-text keyword search via `tsvector` / GIN index. */
   async searchKeyword(
     query: string,
     organization: string,
@@ -1061,6 +1092,7 @@ export class PostgresStorageProvider implements StorageProvider {
     }
   }
 
+  /** pgvector cosine ANN search (HNSW when index is present). */
   async searchVectors(
     embedding: Float32Array,
     topK: number,
@@ -1115,6 +1147,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return scored.slice(0, topK);
   }
 
+  /** ANN search joined with memory rows and org/archived post-filters. */
   async searchVectorsWithMemories(
     embedding: Float32Array,
     topK: number,
@@ -1201,6 +1234,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return mapHits(result.rows);
   }
 
+  /** Soft-archive memories (compression / forget paths). */
   async archiveMemories(
     ids: string[],
     organization: string,
@@ -1249,6 +1283,7 @@ export class PostgresStorageProvider implements StorageProvider {
     });
   }
 
+  /** Hard-delete a single memory by id; returns whether a row was removed. */
   async deleteMemoryById(id: string, organization: string): Promise<boolean> {
     const result = await this.query(
       `DELETE FROM memories WHERE id = $1 AND organization = $2`,
@@ -1257,6 +1292,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /** Hard-delete memories matching org / agent / metadata filters. */
   async deleteMemoriesByFilter(filter: RepositoryFilter): Promise<number> {
     if (!filter.agent) {
       throw new DatabaseError("deleteMemoriesByFilter requires an agent filter");
@@ -1268,6 +1304,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return result.rowCount ?? 0;
   }
 
+  /** Remove all memories for an organization. */
   async clearOrganization(organization: string): Promise<number> {
     const result = await this.query(
       `DELETE FROM memories WHERE organization = $1`,
@@ -1276,6 +1313,7 @@ export class PostgresStorageProvider implements StorageProvider {
     return result.rowCount ?? 0;
   }
 
+  /** List audit history events for a memory id. */
   async getHistory(memoryId: string): Promise<HistoryRow[]> {
     const result = await this.query(
       `SELECT id, memory_id, event_type, related_memory_id, created_at
@@ -1292,6 +1330,7 @@ export class PostgresStorageProvider implements StorageProvider {
     }));
   }
 
+  /** Append a history row (created / archived / compressed / updated). */
   async insertHistoryEvent(event: HistoryRow): Promise<void> {
     await this.query(
       `INSERT INTO memory_history (id, memory_id, event_type, related_memory_id, created_at)
@@ -1306,6 +1345,7 @@ export class PostgresStorageProvider implements StorageProvider {
     );
   }
 
+  /** Aggregate memory counts for an organization. */
   async getStats(
     organization: string,
   ): Promise<{
@@ -1331,6 +1371,7 @@ export class PostgresStorageProvider implements StorageProvider {
     };
   }
 
+  /** Approximate on-disk database size in bytes (`pg_database_size`). */
   async getDatabaseSizeBytes(): Promise<number> {
     const result = await this.query(
       `SELECT pg_database_size(current_database())::bigint AS size`,

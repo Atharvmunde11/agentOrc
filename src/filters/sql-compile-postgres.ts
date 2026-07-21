@@ -160,8 +160,11 @@ function compileInner(
 }
 
 /**
- * Push a metadata filter into PostgreSQL JSONB predicates, or null if unsupported.
- * Parameter placeholders are `$N` starting at `startIndex` (default 1).
+ * Push a metadata filter into PostgreSQL JSONB predicates, or `null` if unsupported.
+ * Parameter placeholders are `$N` starting at `startIndex` (default `1`).
+ *
+ * @param filter - Metadata filter AST.
+ * @param startIndex - First `$N` index for bound parameters.
  */
 export function compileMetadataFilterToPostgres(
   filter: MetadataFilter,

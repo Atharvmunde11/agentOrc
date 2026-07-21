@@ -19,10 +19,17 @@ export function stubMemoryRecord(id: string): MemoryRecord {
   };
 }
 
+/** Serialize graph node metadata to a JSON string (`{}` when undefined). */
 export function serializeMetadata(meta: Record<string, unknown> | undefined): string {
   return JSON.stringify(meta ?? {});
 }
 
+/**
+ * Deserialize graph node metadata from storage (object, JSON string, or empty).
+ *
+ * @param raw - Value from SQLite / Neo4j column.
+ * @returns Plain metadata object; invalid input becomes `{}`.
+ */
 export function deserializeMetadata(raw: unknown): Record<string, unknown> {
   if (raw == null || raw === "") return {};
   if (typeof raw === "object" && !Array.isArray(raw)) {
@@ -40,6 +47,11 @@ export function deserializeMetadata(raw: unknown): Record<string, unknown> {
   return {};
 }
 
+/**
+ * Map a storage or Cypher row into a {@link MemoryRecord}.
+ *
+ * @param row - Snake_case or camelCase column names from graph backends.
+ */
 export function rowToMemoryRecord(row: Record<string, unknown>): MemoryRecord {
   const id = String(row.id ?? row.n_id ?? "");
   const createdAt = parseDate(row.created_at ?? row.createdAt);
@@ -69,7 +81,13 @@ function parseDate(value: unknown): Date {
   return new Date(0);
 }
 
-/** Stable entity id from name+type (portable across backends). */
+/**
+ * Stable entity id from name+type (portable across backends).
+ *
+ * @param name - Human-readable entity label.
+ * @param type - Entity classification (e.g. `"person"`, `"project"`).
+ * @returns Deterministic id prefixed with `ent_`.
+ */
 export function entityIdFrom(name: string, type: string): string {
   const key = `${type.trim().toLowerCase()}::${name.trim().toLowerCase()}`;
   // Simple deterministic hash → hex (no crypto dependency required).

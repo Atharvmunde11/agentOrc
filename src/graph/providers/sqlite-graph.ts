@@ -54,6 +54,9 @@ export interface SqliteGraphProviderOptions {
   concurrency?: ConcurrencyConfig;
 }
 
+/**
+ * File-backed {@link GraphProvider} using recursive SQL CTEs over `graph_nodes` / `graph_edges`.
+ */
 export class SqliteGraphProvider implements GraphProvider {
   readonly name = "sqlite";
   private readonly dbPath: string;
@@ -61,6 +64,9 @@ export class SqliteGraphProvider implements GraphProvider {
   private db: DatabaseSync | null = null;
   private opened = false;
 
+  /**
+   * @param options - Graph SQLite path and optional concurrency tuning.
+   */
   constructor(options: SqliteGraphProviderOptions) {
     if (!options?.path || typeof options.path !== "string" || !options.path.trim()) {
       throw new ConfigurationError("sqlite graph requires a non-empty path");
@@ -69,14 +75,17 @@ export class SqliteGraphProvider implements GraphProvider {
     this.concurrency = resolveConcurrencyConfig(options.concurrency);
   }
 
+  /** Whether this provider supports file snapshots for checkpoint / export. */
   supportsFileSnapshot(): boolean {
     return this.dbPath !== ":memory:";
   }
 
+  /** Absolute graph database path, or `null` for `:memory:`. */
   getDataPath(): string | null {
     return this.dbPath === ":memory:" ? null : this.dbPath;
   }
 
+  /** Open the graph SQLite file, apply pragmas, and create schema if needed. */
   async open(): Promise<void> {
     if (this.opened) return;
 
@@ -119,6 +128,7 @@ export class SqliteGraphProvider implements GraphProvider {
     }
   }
 
+  /** Close the graph database connection. */
   async close(): Promise<void> {
     if (!this.db) {
       this.opened = false;
@@ -142,6 +152,14 @@ export class SqliteGraphProvider implements GraphProvider {
     }
   }
 
+  /**
+   * Create or replace a directed memory↔memory edge.
+   *
+   * @param fromId - Source memory UUID.
+   * @param toId - Target memory UUID.
+   * @param relation - Edge label (e.g. `"related_to"`, `"caused_by"`).
+   * @param metadata - Optional JSON metadata stored on the edge.
+   */
   async linkMemories(
     fromId: string,
     toId: string,
@@ -170,6 +188,13 @@ export class SqliteGraphProvider implements GraphProvider {
     });
   }
 
+  /**
+   * Remove edges between two memories.
+   *
+   * @param fromId - Source memory UUID.
+   * @param toId - Target memory UUID.
+   * @param relation - When set, only delete edges with this relation label.
+   */
   async unlinkMemories(
     fromId: string,
     toId: string,
@@ -236,6 +261,12 @@ export class SqliteGraphProvider implements GraphProvider {
     return out;
   }
 
+  /**
+   * Insert or update a named entity node.
+   *
+   * @param entity - Entity name, type, and optional metadata.
+   * @returns Stable entity id ({@link entityIdFrom}).
+   */
   async upsertEntity(entity: GraphEntityInput): Promise<string> {
     const id = entityIdFrom(entity.name, entity.type);
     const db = this.requireDb();
@@ -263,6 +294,13 @@ export class SqliteGraphProvider implements GraphProvider {
     return id;
   }
 
+  /**
+   * Link an entity to a memory via a `MENTIONS` edge (not traversed by {@link getRelated}).
+   *
+   * @param entityId - Entity id from {@link upsertEntity}.
+   * @param memoryId - Target memory UUID.
+   * @param role - Optional role string stored on the edge metadata.
+   */
   async linkEntityToMemory(
     entityId: string,
     memoryId: string,
@@ -299,6 +337,11 @@ export class SqliteGraphProvider implements GraphProvider {
     });
   }
 
+  /**
+   * Remove the memory node and incident edges when a memory is hard-deleted.
+   *
+   * @param memoryId - Wolbarg memory UUID.
+   */
   async deleteMemory(memoryId: string): Promise<void> {
     const db = this.requireDb();
     await this.withTx(() => {
@@ -321,6 +364,7 @@ export class SqliteGraphProvider implements GraphProvider {
     );
   }
 
+  /** Lightweight connectivity and schema statistics check. */
   async health(): Promise<GraphHealthResult> {
     try {
       if (!this.opened || !this.db) {

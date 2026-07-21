@@ -1,5 +1,7 @@
 /**
- * Re-export storage types under the legacy database path.
+ * Legacy type aliases for {@link StorageProvider} and row shapes.
+ *
+ * @packageDocumentation
  */
 
 export type {

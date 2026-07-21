@@ -1,3 +1,9 @@
+/**
+ * Telemetry types, trace helpers, structured logging, and the async emitter.
+ *
+ * @packageDocumentation
+ */
+
 export type {
   TelemetryOperation,
   TelemetryStatus,

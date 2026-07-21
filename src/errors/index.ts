@@ -1,14 +1,29 @@
 /**
- * Operation-scoped errors with reason + suggestion for developer experience.
+ * Operation-scoped errors with stable `code`, human `reason`, and actionable `suggestion`.
+ *
+ * All Wolbarg errors extend {@link WolbargError} so callers can use `instanceof`
+ * checks and read structured fields in IDE hover docs.
  */
 
-/** Base class for all Wolbarg errors. */
+/**
+ * Base class for all Wolbarg SDK errors.
+ *
+ * @property code - Stable machine-readable error code (e.g. `"VALIDATION_ERROR"`).
+ * @property reason - Short explanation of why the operation failed.
+ * @property suggestion - Actionable fix hint for developers.
+ * @property operation - Facade method name when applicable (e.g. `"recall"`).
+ */
 export class WolbargError extends Error {
   readonly code: string;
   readonly reason?: string;
   readonly suggestion?: string;
   readonly operation?: string;
 
+  /**
+   * @param message - Human-readable error message.
+   * @param code - Stable error code string.
+   * @param options - Optional cause, reason, suggestion, and operation name.
+   */
   constructor(
     message: string,
     code: string,
@@ -28,8 +43,12 @@ export class WolbargError extends Error {
   }
 }
 
-/** Thrown when SDK initialization fails. */
+/** Thrown when SDK initialization or `open()` fails. */
 export class InitializationError extends WolbargError {
+  /**
+   * @param message - Description of the initialization failure.
+   * @param options - Optional cause and structured hints.
+   */
   constructor(
     message: string,
     options?: ErrorOptions & {
@@ -43,8 +62,15 @@ export class InitializationError extends WolbargError {
   }
 }
 
-/** Thrown when configuration values are missing or invalid. */
+/**
+ * Thrown when configuration values are missing, invalid, or incompatible.
+ * Also used for missing optional peer packages (PDF, OCR, Neo4j, etc.).
+ */
 export class ConfigurationError extends WolbargError {
+  /**
+   * @param message - Description of the misconfiguration.
+   * @param options - Optional cause, reason, suggestion, and operation name.
+   */
   constructor(
     message: string,
     options?: ErrorOptions & {
@@ -58,8 +84,12 @@ export class ConfigurationError extends WolbargError {
   }
 }
 
-/** Thrown when method arguments fail validation. */
+/** Thrown when method arguments fail validation before reaching storage. */
 export class ValidationError extends WolbargError {
+  /**
+   * @param message - Which argument failed and why.
+   * @param options - Optional cause and structured hints.
+   */
   constructor(
     message: string,
     options?: ErrorOptions & {
@@ -73,8 +103,12 @@ export class ValidationError extends WolbargError {
   }
 }
 
-/** Thrown when a database operation fails. */
+/** Thrown when a low-level database read/write fails. */
 export class DatabaseError extends WolbargError {
+  /**
+   * @param message - Operation-scoped failure message.
+   * @param options - Optional underlying `cause` and hints.
+   */
   constructor(
     message: string,
     options?: ErrorOptions & {
@@ -90,9 +124,13 @@ export class DatabaseError extends WolbargError {
 
 /**
  * Thrown when SQLite write-lock retries are exhausted.
- * Stable code: WOLBARG_STORAGE_LOCKED
+ * Stable code: `WOLBARG_STORAGE_LOCKED`.
  */
 export class StorageLockedError extends WolbargError {
+  /**
+   * @param message - Lock contention description.
+   * @param options - Typically includes suggestion to tune concurrency or use Postgres.
+   */
   constructor(
     message: string,
     options?: ErrorOptions & {
@@ -106,8 +144,12 @@ export class StorageLockedError extends WolbargError {
   }
 }
 
-/** Thrown when an embedding request fails. */
+/** Thrown when an embedding API request fails or returns invalid vectors. */
 export class EmbeddingError extends WolbargError {
+  /**
+   * @param message - Embedding failure description.
+   * @param options - Optional HTTP cause and provider hints.
+   */
   constructor(
     message: string,
     options?: ErrorOptions & {
@@ -121,8 +163,12 @@ export class EmbeddingError extends WolbargError {
   }
 }
 
-/** Thrown when compression (LLM summarization) fails. */
+/** Thrown when LLM-based memory compression (summarization) fails. */
 export class CompressionError extends WolbargError {
+  /**
+   * @param message - Compression failure description.
+   * @param options - Optional LLM cause chain.
+   */
   constructor(
     message: string,
     options?: ErrorOptions & {
@@ -136,8 +182,12 @@ export class CompressionError extends WolbargError {
   }
 }
 
-/** Thrown when a requested memory does not exist. */
+/** Thrown when a requested memory id does not exist or is archived. */
 export class MemoryNotFoundError extends WolbargError {
+  /**
+   * @param message - Which memory was not found.
+   * @param options - Optional operation context.
+   */
   constructor(
     message: string,
     options?: ErrorOptions & {
@@ -152,11 +202,17 @@ export class MemoryNotFoundError extends WolbargError {
 }
 
 /**
- * Thrown when a method requires an optional provider that was not configured.
+ * Thrown when a method requires an optional provider that was not configured
+ * (reranker, OCR, graph, LLM for extract mode, etc.).
  */
 export class ProviderNotConfiguredError extends ConfigurationError {
   readonly provider: string;
 
+  /**
+   * @param provider - Provider name (e.g. `"reranker"`, `"graph"`).
+   * @param method - Facade method that requires the provider.
+   * @param hint - Install or config instruction shown to the developer.
+   */
   constructor(provider: string, method: string, hint: string) {
     super(`${method} requires ${provider} — ${hint}`, {
       operation: method,
@@ -174,6 +230,10 @@ export class ProviderNotConfiguredError extends ConfigurationError {
  * snapshots; Neo4j does not in v1 — we refuse rather than silently skip.
  */
 export class GraphCheckpointNotSupportedError extends WolbargError {
+  /**
+   * @param backend - Graph backend name (e.g. `"neo4j"`).
+   * @param operation - Requested operation (e.g. `"checkpoint"`).
+   */
   constructor(backend: string, operation: string) {
     super(
       `graph checkpoint not supported for network-backed graph providers (${backend})`,
@@ -189,7 +249,16 @@ export class GraphCheckpointNotSupportedError extends WolbargError {
   }
 }
 
-/** Map low-level SQLite / driver errors into actionable operation errors. */
+/**
+ * Map low-level SQLite / driver errors into actionable {@link WolbargError} subclasses.
+ *
+ * Preserves existing {@link WolbargError} instances unchanged. Recognizes lock
+ * contention, missing files, and read-only database errors.
+ *
+ * @param operation - Facade method name for the error message (e.g. `"remember"`).
+ * @param error - Raw thrown value from the driver.
+ * @returns A typed {@link WolbargError} subclass with `reason` and `suggestion`.
+ */
 export function wrapOperationError(
   operation: string,
   error: unknown,

@@ -1,5 +1,7 @@
 /**
  * Graph memory layer — provider contract + SQLite / Neo4j adapters.
+ *
+ * @packageDocumentation
  */
 
 export type {

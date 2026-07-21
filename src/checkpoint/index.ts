@@ -1,5 +1,7 @@
 /**
- * Checkpoint domain re-exports.
+ * Checkpoint provider types and the SQLite implementation.
+ *
+ * @packageDocumentation
  */
 
 export type {

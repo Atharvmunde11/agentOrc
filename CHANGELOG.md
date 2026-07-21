@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.5] — 2026-07-21
+
+### Added
+
+- **Comprehensive JSDoc** across the SDK and official adapter packages — every exported function, method, class, interface, and notable helper now has descriptions with `@param` / `@returns` / `@example` where useful for IDE hover documentation
+- Provider interface docs explain how to implement custom storage, telemetry, checkpoint, graph, OCR, vision, rerank, and keyword backends
+
+### Changed
+
+- **`SDK_VERSION`** and package version bumped to **0.5.5**
+- Adapter packages peer-depend on `wolbarg >= 0.5.5`
+
+### Compatibility
+
+- Documentation-only release. No runtime API or schema changes from **0.5.4**.
+
 ## [0.5.3] — 2026-07-20
 
 ### Added

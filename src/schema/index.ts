@@ -2,8 +2,10 @@
  * SQL schema constants and migration statements.
  */
 
+/** Current schema version written to `Wolbarg_meta.schema_version`. */
 export const SCHEMA_VERSION = 4;
 
+/** Keys stored in the `Wolbarg_meta` key-value table. */
 export const META_KEYS = {
   schemaVersion: "schema_version",
   embeddingDimensions: "embedding_dimensions",
@@ -147,6 +149,10 @@ export const DROP_REDUNDANT_INDEXES_V4 = [
 /**
  * Build the vec0 virtual table DDL for a fixed embedding dimensionality.
  * Cosine distance enables similarity = 1 - distance.
+ *
+ * @param dimensions - Embedding vector length (positive integer).
+ * @returns `CREATE VIRTUAL TABLE … vec0(…)` DDL string.
+ * @throws {Error} When dimensions is not a positive integer.
  */
 export function buildVectorTableSql(dimensions: number): string {
   if (!Number.isInteger(dimensions) || dimensions <= 0) {

@@ -1,5 +1,9 @@
 /**
- * Wolbarg — local-first, model-agnostic semantic memory SDK for AI agents.
+ * Wolbarg — local-first, model-agnostic semantic memory SDK for AI agents (v0.5.5).
+ *
+ * Construct with {@link wolbarg} / {@link Wolbarg}. Pass custom provider instances
+ * or factory helpers for embedding (`openaiEmbedding`, custom {@link EmbeddingProvider}),
+ * LLM (`openaiLlm`, custom {@link LlmProvider}), storage, graph, and plugins.
  *
  * @packageDocumentation
  */
@@ -101,7 +105,7 @@ export {
   sqliteGraph,
   neo4jGraph,
   createTelemetryProvider,
-  wolbarg as createWolbarg,
+  createWolbarg,
 } from "./factories/index.js";
 
 export {

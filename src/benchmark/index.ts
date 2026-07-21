@@ -1,19 +1,30 @@
 /**
- * Internal benchmark helpers for CLI / Studio later.
- * @internal
+ * Internal benchmark helpers for CLI and Studio performance tooling.
+ *
+ * @internal Exported for harness scripts — not part of the stable public API surface.
  */
 
+/** Single timed iteration result. */
 export interface BenchmarkSample {
+  /** Benchmark scenario name. */
   name: string;
+  /** Wall-clock duration in milliseconds. */
   durationMs: number;
+  /** Whether the iteration completed without throwing. */
   ok: boolean;
+  /** Error message when `ok` is false. */
   error?: string;
 }
 
+/** Aggregated benchmark report with percentile summary. */
 export interface BenchmarkReport {
+  /** ISO-8601 start timestamp. */
   startedAt: string;
+  /** ISO-8601 end timestamp. */
   finishedAt: string;
+  /** Raw per-iteration samples. */
   samples: BenchmarkSample[];
+  /** Rollup statistics across successful iterations. */
   summary: {
     count: number;
     ok: number;
@@ -25,6 +36,14 @@ export interface BenchmarkReport {
   };
 }
 
+/**
+ * Run a benchmark function for a fixed number of iterations.
+ *
+ * @param name - Scenario label attached to each sample.
+ * @param iterations - Number of times to invoke `fn`.
+ * @param fn - Async or sync work to measure.
+ * @returns One {@link BenchmarkSample} per iteration (failures captured, not thrown).
+ */
 export async function runBenchmark(
   name: string,
   iterations: number,
@@ -52,6 +71,14 @@ export async function runBenchmark(
   return samples;
 }
 
+/**
+ * Summarize benchmark samples into a report with avg / p50 / p95 / p99 latencies.
+ *
+ * @param samples - Output from {@link runBenchmark}.
+ * @param startedAt - ISO start time for the run.
+ * @param finishedAt - ISO end time for the run.
+ * @returns {@link BenchmarkReport} suitable for JSON export.
+ */
 export function summarizeBenchmark(
   samples: BenchmarkSample[],
   startedAt: string,
@@ -82,6 +109,7 @@ export function summarizeBenchmark(
   };
 }
 
+/** Compute percentile from a pre-sorted duration array. */
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.min(

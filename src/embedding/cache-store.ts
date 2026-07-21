@@ -10,6 +10,7 @@ import type { EmbeddingCacheStore } from "./cache.js";
 import { embeddingToBuffer } from "../utils/index.js";
 import { bufferToEmbedding } from "../utils/vector.js";
 
+/** SQL DDL for the `embedding_cache` table (SQLite). */
 export const CREATE_EMBEDDING_CACHE_TABLE = `
 CREATE TABLE IF NOT EXISTS embedding_cache (
   cache_key TEXT PRIMARY KEY NOT NULL,
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
 );
 `;
 
+/** Index on `last_used_at` for LRU eviction queries. */
 export const CREATE_EMBEDDING_CACHE_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_embedding_cache_last_used
   ON embedding_cache(last_used_at);
@@ -100,6 +102,17 @@ class L1Cache {
   }
 }
 
+/**
+ * SQLite-backed embedding cache with L1 hot map + write-behind durable rows.
+ *
+ * L1 hits never touch SQLite on the recall/remember hot path. Durable writes
+ * are deferred so the cache never contends with memory inserts on the same connection.
+ *
+ * @example
+ * ```ts
+ * const store = new SqliteEmbeddingCacheStore(() => db, { ttlMs: 86_400_000 });
+ * ```
+ */
 export class SqliteEmbeddingCacheStore implements EmbeddingCacheStore {
   private readonly ttlMs: number | null;
   private readonly getDb: () => DatabaseSync | null;
@@ -119,6 +132,10 @@ export class SqliteEmbeddingCacheStore implements EmbeddingCacheStore {
     evict: StatementSync;
   } | null = null;
 
+  /**
+   * @param dbOrGetter - SQLite `DatabaseSync` or lazy getter (allows late bind).
+   * @param options.ttlMs - Optional TTL for cache entries on read.
+   */
   constructor(
     dbOrGetter: DatabaseSync | (() => DatabaseSync | null),
     options?: { ttlMs?: number | null },
@@ -331,7 +348,7 @@ export class SqliteEmbeddingCacheStore implements EmbeddingCacheStore {
   }
 }
 
-/** In-memory cache store for tests / providers without SQL access. */
+/** In-memory-only embedding cache for tests and providers without SQL access. */
 export class MemoryEmbeddingCacheStore implements EmbeddingCacheStore {
   private readonly l1: L1Cache;
   private readonly ttlMs: number | null;
@@ -370,9 +387,10 @@ type PgQueryable = {
 };
 
 /**
- * Postgres embedding cache: L1-only on the hot path.
- * Durable writes are fire-and-forget on a deferred chain and must never use
- * the memory-insert pool under concurrency (that caused cache speedup <1x).
+ * Postgres embedding cache: L1-only on the hot path by default.
+ *
+ * Durable writes are fire-and-forget on a deferred chain. Set `durable: true`
+ * only when cross-process cache sharing is required — it can reduce speedup under concurrency.
  */
 export class PostgresEmbeddingCacheStore implements EmbeddingCacheStore {
   private readonly ttlMs: number | null;

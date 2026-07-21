@@ -116,10 +116,15 @@ interface PreparedStatements {
 }
 
 export interface SqliteProviderOptions {
+  /** Filesystem path or `:memory:` connection string. */
   connectionString: string;
+  /** Optional write-lock tuning for concurrent async callers. */
   concurrency?: ConcurrencyConfig;
 }
 
+/**
+ * SQLite + sqlite-vec {@link StorageProvider} (Node.js built-in `node:sqlite`).
+ */
 export class SqliteStorageProvider implements StorageProvider {
   readonly name = "sqlite";
 
@@ -160,6 +165,9 @@ export class SqliteStorageProvider implements StorageProvider {
   }> = [];
   private insertFlushScheduled = false;
 
+  /**
+   * @param options - SQLite path / `:memory:` and optional concurrency config.
+   */
   constructor(options: SqliteProviderOptions) {
     this.connectionString = options.connectionString;
     this.concurrency = resolveConcurrencyConfig(options.concurrency);
@@ -175,10 +183,12 @@ export class SqliteStorageProvider implements StorageProvider {
     return this.db;
   }
 
+  /** Register a callback invoked when SQLite busy retries occur (tests / diagnostics). */
   setRetryLogger(fn: ((msg: string) => void) | null): void {
     this.retryLog = fn;
   }
 
+  /** Open the database, run migrations, and prepare statements. */
   async open(): Promise<void> {
     try {
       const dbPath = this.resolvePath(this.connectionString);
@@ -252,6 +262,7 @@ export class SqliteStorageProvider implements StorageProvider {
     }
   }
 
+  /** Drain pending inserts, optimize, and close the SQLite connection. */
   async close(): Promise<void> {
     // Drain coalesced inserts before tearing down the connection.
     const deadline = Date.now() + 2_000;
@@ -286,6 +297,11 @@ export class SqliteStorageProvider implements StorageProvider {
     }
   }
 
+  /**
+   * Create or validate vec0 / blob vector storage for the given dimensionality.
+   *
+   * @param dimensions - Embedding length from the configured model.
+   */
   async ensureVectorSchema(dimensions: number): Promise<void> {
     const existing = await this.getEmbeddingDimensions();
     if (existing !== null && existing !== dimensions) {
@@ -314,15 +330,18 @@ export class SqliteStorageProvider implements StorageProvider {
     this.hydrateMemoryIndex();
   }
 
+  /** @inheritdoc StorageProvider.getEmbeddingDimensions */
   async getEmbeddingDimensions(): Promise<number | null> {
     return this.readMetaNumber(META_KEYS.embeddingDimensions);
   }
 
+  /** @inheritdoc StorageProvider.setEmbeddingDimensions */
   async setEmbeddingDimensions(dimensions: number): Promise<void> {
     await this.setMeta(META_KEYS.embeddingDimensions, String(dimensions));
     this.vectorDimensions = dimensions;
   }
 
+  /** Insert a single memory row (coalesced under concurrent writers). */
   async insertMemory(input: InsertMemoryInput): Promise<MemoryRow> {
     this.requireVectorReady();
     // Coalesce concurrent writers into one BEGIN IMMEDIATE + multi-row insert.
@@ -419,6 +438,7 @@ export class SqliteStorageProvider implements StorageProvider {
     });
   }
 
+  /** Batch insert memories in chunked multi-row transactions. */
   async insertMemoriesBatch(inputs: InsertMemoryInput[]): Promise<MemoryRow[]> {
     if (inputs.length === 0) {
       return [];
@@ -436,6 +456,7 @@ export class SqliteStorageProvider implements StorageProvider {
     });
   }
 
+  /** Update memory content, metadata, embedding, and content hash. */
   async updateMemory(input: UpdateMemoryInput): Promise<MemoryRow | null> {
     const stmts = this.requireStatements();
     return this.withTransaction(() => {
@@ -494,6 +515,7 @@ export class SqliteStorageProvider implements StorageProvider {
     });
   }
 
+  /** Find an active memory by org, agent, and content hash (dedupe). */
   async findActiveByContentHash(
     organization: string,
     agent: string,
@@ -508,6 +530,7 @@ export class SqliteStorageProvider implements StorageProvider {
     return row ?? null;
   }
 
+  /** Scan memories matching metadata filters (may paginate in SQL). */
   async searchByMetadata(
     filter: RepositoryFilter,
     limit?: number,
@@ -522,6 +545,7 @@ export class SqliteStorageProvider implements StorageProvider {
   }
 
   /** Keyword search via FTS5 BM25. Returns memory IDs ranked by relevance. */
+  /** BM25 keyword search via FTS5 (`memories_fts`). */
   async searchKeyword(
     query: string,
     organization: string,
@@ -565,6 +589,7 @@ export class SqliteStorageProvider implements StorageProvider {
     }
   }
 
+  /** Fetch a memory row by UUID within an organization. */
   async getMemoryById(
     id: string,
     organization: string,
@@ -576,6 +601,7 @@ export class SqliteStorageProvider implements StorageProvider {
     return row ?? null;
   }
 
+  /** Fetch a memory row by SQLite integer rowid within an organization. */
   async getMemoryByRowid(
     rowid: number,
     organization: string,
@@ -587,6 +613,7 @@ export class SqliteStorageProvider implements StorageProvider {
     return row ?? null;
   }
 
+  /** Batch-fetch memory rows by SQLite rowids within an organization. */
   async getMemoriesByRowids(
     rowids: number[],
     organization: string,
@@ -609,6 +636,7 @@ export class SqliteStorageProvider implements StorageProvider {
     return out;
   }
 
+  /** List memories matching repository filters with optional limit. */
   async listMemories(
     filter: RepositoryFilter,
     limit?: number,
@@ -625,6 +653,7 @@ export class SqliteStorageProvider implements StorageProvider {
     }
   }
 
+  /** Approximate nearest-neighbor search (vec0 or in-memory blob index). */
   async searchVectors(
     embedding: Float32Array,
     topK: number,
@@ -641,6 +670,7 @@ export class SqliteStorageProvider implements StorageProvider {
    * Org-scoped KNN + memory rows with adaptive overfetch.
    * Global ANN is post-filtered by org/agent/archived; underfill triggers larger k.
    */
+  /** ANN search joined with memory rows and org/archived post-filters. */
   async searchVectorsWithMemories(
     embedding: Float32Array,
     topK: number,
@@ -687,6 +717,7 @@ export class SqliteStorageProvider implements StorageProvider {
     return out;
   }
 
+  /** Soft-archive memories (compression / forget paths). */
   async archiveMemories(
     ids: string[],
     organization: string,
@@ -734,6 +765,7 @@ export class SqliteStorageProvider implements StorageProvider {
     });
   }
 
+  /** Hard-delete a single memory by id; returns whether a row was removed. */
   async deleteMemoryById(id: string, organization: string): Promise<boolean> {
     const stmts = this.requireStatements();
 
@@ -752,6 +784,7 @@ export class SqliteStorageProvider implements StorageProvider {
     });
   }
 
+  /** Hard-delete memories matching org / agent / metadata filters. */
   async deleteMemoriesByFilter(filter: RepositoryFilter): Promise<number> {
     const stmts = this.requireStatements();
     const agent = filter.agent;
@@ -770,6 +803,7 @@ export class SqliteStorageProvider implements StorageProvider {
     });
   }
 
+  /** Remove all memories (and side tables) for an organization. */
   async clearOrganization(organization: string): Promise<number> {
     const stmts = this.requireStatements();
 
@@ -790,11 +824,13 @@ export class SqliteStorageProvider implements StorageProvider {
     });
   }
 
+  /** List audit history events for a memory id. */
   async getHistory(memoryId: string): Promise<HistoryRow[]> {
     const stmts = this.requireStatements();
     return stmts.getHistory.all(memoryId) as unknown as HistoryRow[];
   }
 
+  /** Append a history row (created / archived / compressed / updated). */
   async insertHistoryEvent(event: HistoryRow): Promise<void> {
     const stmts = this.requireStatements();
     stmts.insertHistory.run(
@@ -806,6 +842,7 @@ export class SqliteStorageProvider implements StorageProvider {
     );
   }
 
+  /** Aggregate memory counts for an organization (single-pass SQL). */
   async getStats(
     organization: string,
   ): Promise<{
@@ -829,6 +866,7 @@ export class SqliteStorageProvider implements StorageProvider {
     };
   }
 
+  /** On-disk database file size in bytes (0 for `:memory:`). */
   async getDatabaseSizeBytes(): Promise<number> {
     const db = this.requireDb();
     if (this.connectionString === ":memory:") {

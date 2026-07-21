@@ -1,5 +1,5 @@
 /**
- * Public factory helpers for storage / providers.
+ * Public factory helpers for storage, telemetry, checkpoints, and graph providers (v0.5.5).
  */
 
 import type {
@@ -21,12 +21,27 @@ import { ConfigurationError } from "../errors/index.js";
 import type { WolbargOptions } from "../core/options.js";
 import { Wolbarg } from "../core/wolbarg.js";
 
-/** Create a SQLite storage provider from a path or `:memory:`. */
+/**
+ * Create a SQLite {@link StorageProvider} from a filesystem path or `:memory:`.
+ *
+ * @param connectionString - Absolute/relative `.db` path, or `":memory:"` for ephemeral.
+ * @returns Ready-to-pass storage provider (Wolbarg still calls `open()` via `ready()`).
+ *
+ * @example
+ * ```ts
+ * wolbarg({ organization: "acme", storage: sqlite("./memory.db"), embedding: ... })
+ * ```
+ */
 export function sqlite(connectionString: string): StorageProvider {
   return new SqliteStorageProvider({ connectionString });
 }
 
-/** Create a SQLite storage config object (for init / options). */
+/**
+ * Create a SQLite storage **config object** (for `database` / `init` options).
+ *
+ * @param connectionString - Path or `:memory:`.
+ * @returns `{ provider: "sqlite", connectionString, url }`.
+ */
 export function sqliteConfig(
   connectionString: string,
 ): SqliteDatabaseConfig {
@@ -37,7 +52,21 @@ export function sqliteConfig(
   };
 }
 
-/** Create a PostgreSQL storage provider. Requires optional peer dependency `pg`. */
+/**
+ * Create a PostgreSQL {@link StorageProvider}. Requires optional peer `pg`.
+ *
+ * @param options - Connection string, or an object with:
+ *   - `connectionString` — Postgres URL
+ *   - `maxPoolSize` — optional pool size
+ *   - `durableWrites` — default `true`; set `false` for higher write throughput (async commit)
+ * @returns Postgres storage provider instance.
+ *
+ * @example
+ * ```ts
+ * postgres(process.env.DATABASE_URL!)
+ * postgres({ connectionString: process.env.DATABASE_URL!, maxPoolSize: 10 })
+ * ```
+ */
 export function postgres(
   options:
     | string
@@ -55,7 +84,14 @@ export function postgres(
   return new PostgresStorageProvider(opts);
 }
 
-/** Create a PostgreSQL storage config object. */
+/**
+ * Create a PostgreSQL storage **config object**.
+ *
+ * @param connectionString - Postgres connection URL.
+ * @param options.maxPoolSize - Optional pool size.
+ * @param options.durableWrites - Optional durability flag (default true).
+ * @returns `{ provider: "postgres", connectionString, url, ... }`.
+ */
 export function postgresConfig(
   connectionString: string,
   options?: { maxPoolSize?: number; durableWrites?: boolean },
@@ -68,22 +104,60 @@ export function postgresConfig(
   };
 }
 
-/** Create a SQLite telemetry provider for an independent event database. */
+/**
+ * Create a SQLite {@link TelemetryProvider} for an independent event database.
+ *
+ * @param url - Path to the telemetry SQLite file (separate from memory DB).
+ * @returns Telemetry provider for `telemetry:` constructor option.
+ */
 export function sqliteTelemetry(url: string): TelemetryProvider {
   return new SqliteTelemetryProvider({ url });
 }
 
-/** Create a SQLite checkpoint provider. */
+/**
+ * Create a SQLite {@link CheckpointProvider}.
+ *
+ * @param directory - Optional directory for checkpoint files (default under cwd).
+ * @returns Checkpoint provider for `checkpoint:` constructor option.
+ */
 export function sqliteCheckpoint(directory?: string): CheckpointProvider {
   return new SqliteCheckpointProvider({ directory });
 }
 
-/** Create an embedded SQLite graph provider (file-backed, local/dev). */
+/**
+ * Create an embedded SQLite {@link GraphProvider} (file-backed, local/dev).
+ *
+ * @param options.path - Filesystem path for the graph SQLite database
+ *   (separate from the memory DB).
+ * @returns Graph provider for `graph:` in {@link WolbargOptions}.
+ *
+ * @example
+ * ```ts
+ * graph: sqliteGraph({ path: "./graph.db" })
+ * ```
+ */
 export function sqliteGraph(options: { path: string }): GraphProvider {
   return new SqliteGraphProvider(options);
 }
 
-/** Create a Neo4j graph provider (networked). Requires optional peer `neo4j-driver`. */
+/**
+ * Create a Neo4j {@link GraphProvider} (networked). Requires optional peer `neo4j-driver`.
+ *
+ * @param options.url - Bolt URL, e.g. `neo4j://localhost:7687` or `bolt://…`.
+ * @param options.username - Neo4j username.
+ * @param options.password - Neo4j password.
+ * @param options.database - Optional database name (Neo4j 4+ multi-DB).
+ * @returns Graph provider for `graph:` in {@link WolbargOptions}.
+ *
+ * @example
+ * ```ts
+ * graph: neo4jGraph({
+ *   url: "neo4j://localhost:7687",
+ *   username: "neo4j",
+ *   password: process.env.NEO4J_PASSWORD!,
+ * })
+ * ```
+ */
 export function neo4jGraph(options: {
   url: string;
   username: string;
@@ -93,7 +167,14 @@ export function neo4jGraph(options: {
   return new Neo4jGraphProvider(options);
 }
 
-/** Create a telemetry provider from config (SQLite only in v0.3). */
+/**
+ * Create a {@link TelemetryProvider} from {@link TelemetryConfig}.
+ * Currently only SQLite telemetry databases are implemented.
+ *
+ * @param config - Telemetry config with `database.provider` and `database.url`.
+ * @returns SQLite telemetry provider instance.
+ * @throws {ConfigurationError} If provider is not `"sqlite"` or url is missing.
+ */
 export function createTelemetryProvider(
   config: TelemetryConfig,
 ): TelemetryProvider {
@@ -111,8 +192,24 @@ export function createTelemetryProvider(
 }
 
 /**
- * Preferred v0.3 factory. Equivalent to `new Wolbarg(options)`.
+ * Preferred factory. Equivalent to `new Wolbarg(options)`.
+ *
+ * @param options - Full {@link WolbargOptions} (providers, database, embedding, optional llm).
+ * @returns Configured {@link Wolbarg} instance — call `ready()` before use.
+ *
+ * @example
+ * ```ts
+ * const ctx = wolbarg({
+ *   organization: "acme",
+ *   database: sqliteConfig("./memory.db"),
+ *   embedding: openaiEmbedding({ apiKey: "...", model: "text-embedding-3-small" }),
+ * });
+ * await ctx.ready();
+ * ```
  */
 export function wolbarg(options: WolbargOptions): Wolbarg {
   return new Wolbarg(options as never);
 }
+
+/** @deprecated Alias of {@link wolbarg}. */
+export const createWolbarg = wolbarg;

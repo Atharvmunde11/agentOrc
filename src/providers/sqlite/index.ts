@@ -1,3 +1,9 @@
+/**
+ * SQLite-backed telemetry, checkpoint, and event database providers.
+ *
+ * @packageDocumentation
+ */
+
 export { SqliteEventDatabase } from "./sqliteEventDatabase.js";
 export type { SqliteEventDatabaseOptions } from "./sqliteEventDatabase.js";
 export { SqliteTelemetryProvider } from "./sqliteTelemetryProvider.js";

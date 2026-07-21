@@ -2,9 +2,14 @@
  * Cosine distance helpers for the blob vector fallback backend.
  */
 
-/** Cosine distance = 1 - cosine_similarity (matches sqlite-vec cosine metric). */
-export function cosineDistance(a: Float32Array, b: Float32Array): number {
-  if (a.length !== b.length) {
+/** Cosine distance = 1 - cosine_similarity (matches sqlite-vec cosine metric).
+ *
+ * @param a - First embedding vector.
+ * @param b - Second embedding vector (same length as `a`).
+ * @returns Distance in [0, 2]; returns `1` when either vector has zero norm.
+ * @throws {Error} When vector lengths differ.
+ */
+export function cosineDistance(a: Float32Array, b: Float32Array): number {  if (a.length !== b.length) {
     throw new Error(
       `cosineDistance dimension mismatch: a.length=${a.length}, b.length=${b.length}`,
     );
@@ -30,9 +35,11 @@ export function cosineDistance(a: Float32Array, b: Float32Array): number {
 /**
  * Decode a float32 embedding from a SQLite BLOB.
  * Avoids a copy when the underlying ArrayBuffer is already aligned/owned.
+ *
+ * @param data - Raw bytes from a SQLite BLOB column.
+ * @returns Float32Array view over the embedding (may alias `data`'s buffer).
  */
-export function bufferToEmbedding(data: Uint8Array | Buffer): Float32Array {
-  const byteOffset = (data as Uint8Array).byteOffset ?? 0;
+export function bufferToEmbedding(data: Uint8Array | Buffer): Float32Array {  const byteOffset = (data as Uint8Array).byteOffset ?? 0;
   const byteLength = data.byteLength;
   if (byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
     return new Float32Array(

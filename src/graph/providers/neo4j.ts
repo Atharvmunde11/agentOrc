@@ -59,12 +59,19 @@ type Neo4jModule = {
 };
 
 export interface Neo4jGraphProviderOptions {
+  /** Bolt / Neo4j URI (e.g. `neo4j://localhost:7687`). */
   url: string;
+  /** Neo4j username. */
   username: string;
+  /** Neo4j password. */
   password: string;
+  /** Optional multi-database name (Neo4j 4+). */
   database?: string;
 }
 
+/**
+ * Networked {@link GraphProvider} backed by Neo4j (`neo4j-driver` optional peer).
+ */
 export class Neo4jGraphProvider implements GraphProvider {
   readonly name = "neo4j";
   private readonly url: string;
@@ -74,6 +81,9 @@ export class Neo4jGraphProvider implements GraphProvider {
   private driver: Neo4jDriver | null = null;
   private opened = false;
 
+  /**
+   * @param options - Bolt URL, credentials, and optional database name.
+   */
   constructor(options: Neo4jGraphProviderOptions) {
     if (!options?.url?.trim()) {
       throw new ConfigurationError("neo4j graph requires a non-empty url");
@@ -90,14 +100,17 @@ export class Neo4jGraphProvider implements GraphProvider {
     this.database = options.database?.trim() || undefined;
   }
 
+  /** Neo4j does not support local file snapshots for checkpoint pairing. */
   supportsFileSnapshot(): boolean {
     return false;
   }
 
+  /** Always `null` — graph data lives in the remote Neo4j cluster. */
   getDataPath(): string | null {
     return null;
   }
 
+  /** Connect to Neo4j, verify connectivity, and ensure uniqueness constraints. */
   async open(): Promise<void> {
     if (this.opened) return;
 
@@ -135,6 +148,7 @@ export class Neo4jGraphProvider implements GraphProvider {
     });
   }
 
+  /** Close the neo4j-driver connection. */
   async close(): Promise<void> {
     if (this.driver) {
       await this.driver.close();
@@ -215,6 +229,14 @@ export class Neo4jGraphProvider implements GraphProvider {
     await this.run(cypher, { id });
   }
 
+  /**
+   * MERGE a directed `RELATED` relationship between two memory nodes.
+   *
+   * @param fromId - Source memory UUID.
+   * @param toId - Target memory UUID.
+   * @param relation - Relationship label stored on `RELATED.relation`.
+   * @param metadata - Optional JSON metadata on the relationship.
+   */
   async linkMemories(
     fromId: string,
     toId: string,
@@ -240,6 +262,13 @@ export class Neo4jGraphProvider implements GraphProvider {
     });
   }
 
+  /**
+   * Delete `RELATED` relationship(s) between two memories.
+   *
+   * @param fromId - Source memory UUID.
+   * @param toId - Target memory UUID.
+   * @param relation - When set, only delete edges with this relation property.
+   */
   async unlinkMemories(
     fromId: string,
     toId: string,
@@ -307,6 +336,12 @@ export class Neo4jGraphProvider implements GraphProvider {
     );
   }
 
+  /**
+   * MERGE an `Entity` node keyed by deterministic id.
+   *
+   * @param entity - Entity name, type, and optional metadata.
+   * @returns Stable entity id ({@link entityIdFrom}).
+   */
   async upsertEntity(entity: GraphEntityInput): Promise<string> {
     const id = entityIdFrom(entity.name, entity.type);
     await this.run(
@@ -322,6 +357,13 @@ export class Neo4jGraphProvider implements GraphProvider {
     return id;
   }
 
+  /**
+   * MERGE a `MENTIONS` relationship from entity to memory.
+   *
+   * @param entityId - Entity id from {@link upsertEntity}.
+   * @param memoryId - Target memory UUID.
+   * @param role - Optional role string on the relationship.
+   */
   async linkEntityToMemory(
     entityId: string,
     memoryId: string,
@@ -350,6 +392,11 @@ export class Neo4jGraphProvider implements GraphProvider {
     });
   }
 
+  /**
+   * DETACH DELETE the memory node and all incident relationships.
+   *
+   * @param memoryId - Wolbarg memory UUID.
+   */
   async deleteMemory(memoryId: string): Promise<void> {
     await this.run(
       `MATCH (m:Memory { id: $id })
@@ -358,6 +405,13 @@ export class Neo4jGraphProvider implements GraphProvider {
     );
   }
 
+  /**
+   * Run arbitrary parameterized Cypher (escape hatch for advanced graph queries).
+   *
+   * @param cypher - Cypher query string.
+   * @param params - Bound parameters for the query.
+   * @returns Raw row objects from the driver.
+   */
   async query(
     cypher: string,
     params?: Record<string, unknown>,
@@ -365,6 +419,7 @@ export class Neo4jGraphProvider implements GraphProvider {
     return this.run(cypher, params ?? {});
   }
 
+  /** Verify connectivity and return server metadata when available. */
   async health(): Promise<GraphHealthResult> {
     try {
       if (!this.opened || !this.driver) {

@@ -14,6 +14,9 @@ export const ENTITY_MENTIONS_RELATION = "MENTIONS";
 
 /**
  * Delete the memory graph node for `memoryId` and all edges that reference it.
+ *
+ * @param db - Open SQLite graph database handle.
+ * @param memoryId - Wolbarg memory UUID (`graph_nodes.ref_id` for type `memory`).
  */
 export function cascadeDeleteMemoryNode(
   db: DatabaseSync,

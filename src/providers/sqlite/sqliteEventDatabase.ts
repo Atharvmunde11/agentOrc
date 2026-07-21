@@ -89,11 +89,16 @@ export class SqliteEventDatabase implements EventDatabase {
   private insertStmt: StatementSync | null = null;
   private columns = new Set<string>();
 
+  /**
+   * @param options.url - Path to the telemetry SQLite file.
+   * @param options.readonly - Open read-only (Studio / analytics).
+   */
   constructor(options: SqliteEventDatabaseOptions) {
     this.url = options.url;
     this.readonly = options.readonly ?? false;
   }
 
+  /** Open the telemetry database and run schema migrations. */
   async open(): Promise<void> {
     try {
       const dbPath = this.resolvePath(this.url);
@@ -152,6 +157,7 @@ export class SqliteEventDatabase implements EventDatabase {
     }
   }
 
+  /** Close the telemetry database connection. */
   async close(): Promise<void> {
     if (!this.db) return;
     try {
@@ -163,6 +169,7 @@ export class SqliteEventDatabase implements EventDatabase {
     }
   }
 
+  /** Insert one normalized telemetry event row. */
   async insertEvent(input: TelemetryEventInput): Promise<TelemetryEvent> {
     const event = normalizeEvent(input);
     const stmt = this.insertStmt;
@@ -209,6 +216,7 @@ export class SqliteEventDatabase implements EventDatabase {
     }
   }
 
+  /** Insert many events in a single transaction. */
   async insertEvents(inputs: TelemetryEventInput[]): Promise<TelemetryEvent[]> {
     const db = this.requireDb();
     const out: TelemetryEvent[] = [];
@@ -229,6 +237,7 @@ export class SqliteEventDatabase implements EventDatabase {
     }
   }
 
+  /** Query telemetry events with filters, sort, and pagination. */
   async query(options: TelemetryQuery): Promise<TelemetryQueryResult> {
     const db = this.requireDb();
     const clauses: string[] = [];
@@ -322,6 +331,7 @@ export class SqliteEventDatabase implements EventDatabase {
     };
   }
 
+  /** Fetch one event by primary key. */
   async getEvent(id: string): Promise<TelemetryEvent | null> {
     const db = this.requireDb();
     const row = db
@@ -330,6 +340,7 @@ export class SqliteEventDatabase implements EventDatabase {
     return row ? rowToEvent(row) : null;
   }
 
+  /** Count events optionally filtered by time and operation. */
   async countEvents(filter?: {
     since?: string;
     operation?: string;

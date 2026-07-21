@@ -1,5 +1,8 @@
 /**
  * Configuration validation for SDK initialization and constructor options.
+ *
+ * All validators throw {@link ConfigurationError} or {@link ValidationError}
+ * with field-scoped messages suitable for IDE hover documentation.
  */
 
 import type {
@@ -72,6 +75,13 @@ function assertUrl(value: string, fieldName: string): void {
   }
 }
 
+/**
+ * Validate and normalize embedding provider configuration.
+ *
+ * @param config - Raw embedding config from `wolbarg({ embedding })`.
+ * @returns Trimmed, normalized config with trailing slashes removed from `baseUrl`.
+ * @throws {@link ConfigurationError} when required fields are missing or invalid.
+ */
 export function validateEmbeddingConfig(config: EmbeddingConfig): EmbeddingConfig {
   assertUrl(config.baseUrl, "embedding.baseUrl");
   assertNonEmpty(config.apiKey, "embedding.apiKey");
@@ -90,6 +100,13 @@ export function validateEmbeddingConfig(config: EmbeddingConfig): EmbeddingConfi
   };
 }
 
+/**
+ * Validate and normalize LLM provider configuration.
+ *
+ * @param config - Raw LLM config from `wolbarg({ llm })`.
+ * @returns Normalized config with validated temperature and token limits.
+ * @throws {@link ConfigurationError} when URLs, models, or numeric ranges are invalid.
+ */
 export function validateLlmConfig(config: LlmConfig): LlmConfig {
   assertUrl(config.baseUrl, "llm.baseUrl");
   assertNonEmpty(config.apiKey, "llm.apiKey");
@@ -278,6 +295,14 @@ function validateEmbeddingCacheConfig(
   return out;
 }
 
+/**
+ * Normalize SQLite or PostgreSQL database configuration.
+ *
+ * Resolves `url` / `connectionString` aliases and validates the provider name.
+ *
+ * @param config - Storage or database config object.
+ * @returns Normalized {@link DatabaseConfig} with both `url` and `connectionString` set.
+ */
 export function normalizeDatabaseConfig(
   config: DatabaseConfig | StorageConfig,
 ): DatabaseConfig {
@@ -310,6 +335,13 @@ export function normalizeDatabaseConfig(
   };
 }
 
+/**
+ * Validate telemetry configuration (independent database from memory storage).
+ *
+ * @param config - Telemetry block from `wolbarg({ telemetry })`.
+ * @returns Normalized config with defaults for capture flags and log level.
+ * @throws {@link ConfigurationError} for unsupported providers (Neo4j/Kuzu) or missing URL.
+ */
 export function validateTelemetryConfig(config: TelemetryConfig): TelemetryConfig {
   if (!config.database || typeof config.database !== "object") {
     throw new ConfigurationError("telemetry.database is required when telemetry is enabled");
@@ -365,7 +397,10 @@ export function validateTelemetryConfig(config: TelemetryConfig): TelemetryConfi
 }
 
 /**
- * Validate and normalize init options (v0.1 compat).
+ * Validate and normalize init options (v0.1 compatibility entry point).
+ *
+ * @param options - Legacy `init()` shape with organization, database, embedding, optional llm.
+ * @returns Trimmed organization and normalized nested configs.
  */
 export function validateInitOptions(options: InitOptions): InitOptions {
   if (options === null || typeof options !== "object") {
@@ -408,6 +443,16 @@ function resolveStorageInput(options: WolbargOptions): StorageInput {
   return input;
 }
 
+/**
+ * Validate and normalize the full `wolbarg()` constructor options object.
+ *
+ * Resolves storage/database aliases, validates retrieval, dedupe, embedding cache,
+ * telemetry, and graph inputs.
+ *
+ * @param options - Raw constructor options.
+ * @returns Normalized options safe for Wolbarg construction.
+ * @throws {@link ConfigurationError} on invalid or conflicting configuration.
+ */
 export function validateWolbargOptions(options: WolbargOptions): WolbargOptions {
   if (options === null || typeof options !== "object") {
     throw new ConfigurationError("Wolbarg options must be an object");
@@ -489,8 +534,18 @@ export function validateWolbargOptions(options: WolbargOptions): WolbargOptions 
 }
 
 /**
- * Accept a GraphProvider instance or `{ provider: "sqlite" | "neo4j", … }` config.
- * Throws ConfigurationError on garbage input.
+ * Accept a {@link GraphProvider} instance or `{ provider: "sqlite" | "neo4j", … }` config.
+ *
+ * Instantiates built-in SQLite / Neo4j providers from config objects.
+ *
+ * @param input - Graph provider instance or config.
+ * @returns Resolved {@link GraphProvider} ready for `open()`.
+ * @throws {@link ConfigurationError} on garbage input or unsupported provider names.
+ *
+ * @example
+ * ```ts
+ * const graph = resolveGraphInput({ provider: "sqlite", path: "./graph.db" });
+ * ```
  */
 export function resolveGraphInput(input: GraphInput): GraphProvider {
   if (input == null || typeof input !== "object") {

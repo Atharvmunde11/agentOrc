@@ -17,7 +17,7 @@ npm install wolbarg
 
 Wolbarg is **memory infrastructure**, not an agent framework. Agents call `remember()` / `recall()` (and optionally ingest, compress, subscribe, and link memories in a graph). You bring SQLite or PostgreSQL, any OpenAI-compatible embedding API, and optional peers for PDF/DOCX/OCR/Neo4j.
 
-**Current release: [v0.5.4](./CHANGELOG.md)** — official framework adapters (`@wolbarg/openai`, `@wolbarg/langchain`, `@wolbarg/llamaindex`, `@wolbarg/mastra`, `@wolbarg/vercel-ai`). Still includes experimental `rememberFromMessages()`, 0.5 graph memory (SQLite + Neo4j), `includeGraph` recall, and [Wolbarg Studio](https://wolbarg.com/docs/observability).
+**Current release: [v0.5.5](./CHANGELOG.md)** — comprehensive JSDoc for IDE hover docs across the SDK and adapters. Still includes official framework adapters (`@wolbarg/openai`, `@wolbarg/langchain`, `@wolbarg/llamaindex`, `@wolbarg/mastra`, `@wolbarg/vercel-ai`), experimental `rememberFromMessages()`, 0.5 graph memory (SQLite + Neo4j), `includeGraph` recall, and [Wolbarg Studio](https://wolbarg.com/docs/observability).
 
 ---
 

@@ -43,6 +43,11 @@ export function normalizeConversationMessages(
   });
 }
 
+/**
+ * Resolve and validate options for {@link Wolbarg.rememberFromMessages}.
+ *
+ * @param options - Agent, mode, rawStrategy, metadata, dedupe overrides.
+ */
 export function resolveRememberFromMessagesOptions(
   options: RememberFromMessagesOptions,
 ): {

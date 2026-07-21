@@ -80,7 +80,7 @@ function compileComparison(
   return null;
 }
 
-/** Push a metadata filter into SQLite JSON predicates, or null if unsupported. */
+/** Push a metadata filter into SQLite `json_extract` predicates, or `null` if unsupported. */
 export function compileMetadataFilterToSql(
   filter: MetadataFilter,
 ): CompiledMetadataSql | null {

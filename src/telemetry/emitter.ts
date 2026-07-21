@@ -20,31 +20,59 @@ import {
 } from "./trace.js";
 import { createId, nowIso } from "../utils/index.js";
 
+/** No-op telemetry provider used when observability is disabled. */
 export class NoopTelemetryProvider implements TelemetryProvider {
   readonly name = "noop";
 
+  /** @inheritdoc TelemetryProvider.open */
   async open(): Promise<void> {}
+  /** @inheritdoc TelemetryProvider.close */
   async close(): Promise<void> {}
+  /** @inheritdoc TelemetryProvider.emit */
   emit(_event: TelemetryEventInput): void {}
+  /** @inheritdoc TelemetryProvider.flush */
   async flush(): Promise<void> {}
 }
 
+/**
+ * Handle for an in-flight traced operation.
+ *
+ * Created by {@link TelemetryEmitter.start}. Call `success()` or `failure()`
+ * exactly once when the operation completes.
+ */
 export interface OperationTraceHandle {
+  /** Distributed trace context (session, trace, parent ids). */
   context: TraceContext;
+  /** `performance.now()` at operation start. */
   startedAt: number;
+  /** Partial latency breakdown filled via {@link OperationTraceHandle.mark}. */
   latency: Partial<LatencyBreakdown>;
+  /** Start a child trace for nested operations. */
   child(operation: TelemetryOperation): OperationTraceHandle;
+  /** Record stage latency in milliseconds. */
   mark(stage: keyof Omit<LatencyBreakdown, "totalMs">, ms: number): void;
+  /** Emit a successful completion event. */
   success(fields?: Partial<TelemetryEventInput>): void;
+  /** Emit a failed completion event. */
   failure(error: unknown, fields?: Partial<TelemetryEventInput>): void;
 }
 
+/** Default organization injected into events when not overridden per-call. */
 export interface TelemetryEmitterContext {
+  /** Organization namespace from Wolbarg constructor. */
   organization?: string | null;
 }
 
+/**
+ * Async telemetry emitter — never blocks memory operations.
+ *
+ * Wraps a {@link TelemetryProvider} with session/trace lifecycle helpers and
+ * configurable capture flags (queries, latency, errors, similarity scores).
+ */
 export class TelemetryEmitter {
+  /** Stable session id for this Wolbarg instance lifetime. */
   readonly sessionId: string;
+  /** Structured logger gated by telemetry log level. */
   readonly logger: WolbargLogger;
   private provider: TelemetryProvider;
   private readonly config: Required<
@@ -61,6 +89,11 @@ export class TelemetryEmitter {
   >;
   private readonly context: TelemetryEmitterContext;
 
+  /**
+   * @param provider - Telemetry backend, or `null` for {@link NoopTelemetryProvider}.
+   * @param config - Capture flags and log level.
+   * @param context - Default organization injected into events.
+   */
   constructor(
     provider: TelemetryProvider | null,
     config?: Partial<TelemetryConfig>,
@@ -81,14 +114,17 @@ export class TelemetryEmitter {
     this.logger = new WolbargLogger(this.config.level);
   }
 
+  /** Whether telemetry is enabled and backed by a non-noop provider. */
   get enabled(): boolean {
     return this.config.enabled && this.provider.name !== "noop";
   }
 
+  /** Replace the underlying telemetry provider (e.g. after lazy init). */
   setProvider(provider: TelemetryProvider): void {
     this.provider = provider;
   }
 
+  /** Open the underlying telemetry provider when enabled. */
   async open(): Promise<void> {
     if (!this.config.enabled) {
       return;
@@ -96,15 +132,24 @@ export class TelemetryEmitter {
     await this.provider.open();
   }
 
+  /** Flush pending events and close the telemetry provider. */
   async close(): Promise<void> {
     await this.provider.flush();
     await this.provider.close();
   }
 
+  /** Flush pending telemetry events without closing the provider. */
   async flush(): Promise<void> {
     await this.provider.flush();
   }
 
+  /**
+   * Begin tracing an operation.
+   *
+   * @param operation - Public telemetry operation name.
+   * @param parent - Optional parent trace for nested spans.
+   * @returns Handle — call `success()` or `failure()` when done.
+   */
   start(operation: TelemetryOperation, parent?: TraceContext): OperationTraceHandle {
     const context = parent
       ? createChildTrace(parent)
@@ -205,11 +250,13 @@ export class TelemetryEmitter {
     };
   }
 
+  /** Emit a startup telemetry event. */
   emitStartup(provider: string): void {
     const trace = this.start("startup");
     trace.success({ provider });
   }
 
+  /** Emit a shutdown telemetry event. */
   emitShutdown(provider: string): void {
     const trace = this.start("shutdown");
     trace.success({ provider });

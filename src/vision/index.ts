@@ -1,15 +1,54 @@
 /**
- * Optional vision provider — captions / descriptions / entities from images.
+ * Optional vision providers — captions, descriptions, and entities from images.
+ *
+ * Vision analysis enriches image ingest when OCR alone is insufficient. Both
+ * {@link openaiVision} and {@link geminiVision} use OpenAI-compatible chat
+ * endpoints with multimodal messages.
+ *
+ * @example
+ * ```ts
+ * import { openaiVision } from "wolbarg/vision";
+ *
+ * const vision = openaiVision({ apiKey: process.env.OPENAI_API_KEY! });
+ * const result = await vision.analyze(imageBuffer, "image/jpeg");
+ * console.log(result.caption, result.entities);
+ * ```
  */
 
+/** Structured output from a vision analysis call. */
 export interface VisionResult {
+  /** Short one-line caption. */
   caption: string;
+  /** Longer natural-language description. */
   description: string;
+  /** Named entities or objects detected in the image. */
   entities: string[];
 }
 
+/**
+ * Contract for vision / multimodal analysis backends.
+ *
+ * Implement this interface to plug in Claude, local VLMs, or custom APIs.
+ * Wolbarg merges vision output into ingest metadata when processing images.
+ *
+ * @example Custom provider
+ * ```ts
+ * const myVision: VisionProvider = {
+ *   name: "my-vlm",
+ *   async analyze(image, mimeType) {
+ *     return { caption: "...", description: "...", entities: ["cat"] };
+ *   },
+ * };
+ * ```
+ */
 export interface VisionProvider {
+  /** Provider identifier (e.g. `"openai-vision"`, `"gemini"`). */
   readonly name: string;
+  /**
+   * Analyze an image and return structured caption data.
+   * @param image - Raw image bytes.
+   * @param mimeType - MIME type for the data URL (default `"image/png"`).
+   */
   analyze(image: Buffer, mimeType?: string): Promise<VisionResult>;
 }
 
@@ -21,6 +60,7 @@ interface VisionHttpOptions {
   timeoutMs?: number;
 }
 
+/** Internal OpenAI-compatible multimodal chat vision adapter. */
 class OpenAICompatibleVisionProvider implements VisionProvider {
   readonly name: string;
   private readonly options: VisionHttpOptions;
@@ -77,6 +117,7 @@ class OpenAICompatibleVisionProvider implements VisionProvider {
   }
 }
 
+/** Parse JSON (or plain text fallback) from model output into {@link VisionResult}. */
 function parseVisionJson(content: string): VisionResult {
   try {
     const match = content.match(/\{[\s\S]*\}/);
@@ -96,6 +137,16 @@ function parseVisionJson(content: string): VisionResult {
   }
 }
 
+/**
+ * Google Gemini vision via the OpenAI-compatible Generative Language API.
+ *
+ * @param options - API credentials and model selection.
+ * @param options.apiKey - Gemini API key.
+ * @param options.model - Model id (default `"gemini-2.0-flash"`).
+ * @param options.baseUrl - Override API base (default Google OpenAI-compat endpoint).
+ * @param options.timeoutMs - Request timeout in milliseconds (default `60000`).
+ * @returns A {@link VisionProvider} instance.
+ */
 export function geminiVision(options: {
   apiKey: string;
   model?: string;
@@ -113,6 +164,21 @@ export function geminiVision(options: {
   });
 }
 
+/**
+ * OpenAI vision via `/chat/completions` with image_url content parts.
+ *
+ * @param options - API credentials and model selection.
+ * @param options.apiKey - OpenAI API key.
+ * @param options.model - Vision-capable model (default `"gpt-4o-mini"`).
+ * @param options.baseUrl - Override API base (default `"https://api.openai.com/v1"`).
+ * @param options.timeoutMs - Request timeout in milliseconds (default `60000`).
+ * @returns A {@link VisionProvider} instance.
+ *
+ * @example
+ * ```ts
+ * const vision = openaiVision({ apiKey: process.env.OPENAI_API_KEY! });
+ * ```
+ */
 export function openaiVision(options: {
   apiKey: string;
   model?: string;

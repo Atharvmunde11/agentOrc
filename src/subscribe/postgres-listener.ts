@@ -14,6 +14,7 @@ import type {
   Unsubscribe,
 } from "./types.js";
 
+/** Postgres `LISTEN` channel name for cross-process memory change events. */
 export const WOLBARG_NOTIFY_CHANNEL = "wolbarg_events";
 
 interface Subscription {
@@ -40,6 +41,11 @@ function matchesFilter(
   );
 }
 
+/**
+ * Serialize a {@link MemoryChangeEvent} for `pg_notify` (≤ ~7900 bytes).
+ *
+ * @param event - Change event emitted after a memory write.
+ */
 export function serializeNotifyPayload(event: MemoryChangeEvent): string {
   const payload = JSON.stringify({
     event: event.event,
@@ -66,6 +72,12 @@ export function serializeNotifyPayload(event: MemoryChangeEvent): string {
   return payload;
 }
 
+/**
+ * Parse a NOTIFY payload back into a {@link MemoryChangeEvent}.
+ *
+ * @param raw - JSON string from `pg_notify`.
+ * @returns Parsed event or `null` when invalid.
+ */
 export function parseNotifyPayload(raw: string): MemoryChangeEvent | null {
   try {
     const parsed = JSON.parse(raw) as MemoryChangeEvent;
@@ -92,6 +104,7 @@ export interface PostgresListenerOptions {
   onError?: (error: unknown) => void;
 }
 
+/** Cross-process {@link SubscribeBackend} using Postgres LISTEN/NOTIFY. */
 export class PostgresSubscribeListener implements SubscribeBackend {
   private readonly subscriptions = new Map<number, Subscription>();
   private nextId = 1;
@@ -103,12 +116,18 @@ export class PostgresSubscribeListener implements SubscribeBackend {
   private readonly connect: () => Promise<PoolClient>;
   private readonly onError?: (error: unknown) => void;
 
+  /**
+   * @param options.connect - Factory returning a dedicated LISTEN client.
+   * @param options.reconnectDelayMs - Delay before reconnect attempts (default 1000).
+   * @param options.onError - Optional error hook for connection failures.
+   */
   constructor(options: PostgresListenerOptions) {
     this.connect = options.connect;
     this.reconnectDelayMs = options.reconnectDelayMs ?? 1000;
     this.onError = options.onError;
   }
 
+  /** Open the LISTEN connection (lazy — also started on first subscribe). */
   async start(): Promise<void> {
     if (this.closed) {
       return;
@@ -212,6 +231,13 @@ export class PostgresSubscribeListener implements SubscribeBackend {
     }
   }
 
+  /**
+   * Register a filtered callback for memory change events.
+   *
+   * @param filter - Organization / agent / event-type filter.
+   * @param callback - Invoked synchronously on each matching NOTIFY.
+   * @returns Unsubscribe function.
+   */
   subscribe(
     filter: SubscribeFilter,
     callback: MemoryChangeCallback,
@@ -240,6 +266,7 @@ export class PostgresSubscribeListener implements SubscribeBackend {
     // Cross-process delivery happens via NOTIFY from the storage layer.
   }
 
+  /** Tear down LISTEN connection and clear subscriptions. */
   async close(): Promise<void> {
     this.closed = true;
     this.subscriptions.clear();
@@ -278,7 +305,12 @@ export async function notifyMemoryChange(
   ]);
 }
 
-/** Helper to create a listener from a pg Pool. */
+/**
+ * Build a {@link PostgresSubscribeListener} from an existing `pg` Pool.
+ *
+ * @param pool - Postgres connection pool (uses `pool.connect()` for LISTEN).
+ * @param onError - Optional connection error callback.
+ */
 export function createPostgresListenerFromPool(
   pool: Pool,
   onError?: (error: unknown) => void,
