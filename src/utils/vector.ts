@@ -4,7 +4,12 @@
 
 /** Cosine distance = 1 - cosine_similarity (matches sqlite-vec cosine metric). */
 export function cosineDistance(a: Float32Array, b: Float32Array): number {
-  const len = Math.min(a.length, b.length);
+  if (a.length !== b.length) {
+    throw new Error(
+      `cosineDistance dimension mismatch: a.length=${a.length}, b.length=${b.length}`,
+    );
+  }
+  const len = a.length;
   let dot = 0;
   let normA = 0;
   let normB = 0;

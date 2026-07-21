@@ -18,10 +18,13 @@ import {
 import type {
   DatabaseConfig,
   EmbeddingConfig,
+  EmbeddingCacheConfig,
   InitOptions,
   LlmConfig,
+  MemoryDedupeConfig,
   StorageConfig,
   TelemetryConfig,
+  RetrievalConfig,
 } from "../types/index.js";
 import { ConfigurationError } from "../errors/index.js";
 import { SqliteGraphProvider } from "../graph/providers/sqlite-graph.js";
@@ -31,6 +34,29 @@ import type { GraphConfig, GraphProvider } from "../graph/types.js";
 function assertNonEmpty(value: unknown, fieldName: string): asserts value is string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new ConfigurationError(`${fieldName} must be a non-empty string`);
+  }
+}
+
+function assertFiniteNumber(value: unknown, fieldName: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ConfigurationError(`${fieldName} must be a finite number`);
+  }
+}
+
+function assertNumberMin(value: number, fieldName: string, min: number): void {
+  if (!Number.isFinite(value) || value < min) {
+    throw new ConfigurationError(`${fieldName} must be >= ${min}`);
+  }
+}
+
+function assertNumberInRange(
+  value: number,
+  fieldName: string,
+  min: number,
+  max: number,
+): void {
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new ConfigurationError(`${fieldName} must be between ${min} and ${max}`);
   }
 }
 
@@ -96,6 +122,160 @@ export function validateLlmConfig(config: LlmConfig): LlmConfig {
     ...(config.maxTokens !== undefined ? { maxTokens: config.maxTokens } : {}),
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
   };
+}
+
+function validateRetrievalConfig(config: RetrievalConfig): RetrievalConfig {
+  if (config === null || typeof config !== "object") {
+    throw new ConfigurationError("retrieval must be an object");
+  }
+
+  const out: RetrievalConfig = {};
+
+  if (config.overFetchFactor !== undefined) {
+    assertFiniteNumber(config.overFetchFactor, "retrieval.overFetchFactor");
+    assertNumberMin(config.overFetchFactor, "retrieval.overFetchFactor", 0);
+    if (config.overFetchFactor <= 0) {
+      throw new ConfigurationError("retrieval.overFetchFactor must be > 0");
+    }
+    out.overFetchFactor = config.overFetchFactor;
+  }
+
+  if (config.hybrid !== undefined) {
+    if (config.hybrid === null || typeof config.hybrid !== "object") {
+      throw new ConfigurationError("retrieval.hybrid must be an object");
+    }
+    const hybrid = config.hybrid;
+    const outHybrid: NonNullable<RetrievalConfig["hybrid"]> = {};
+
+    if (hybrid.semanticWeight !== undefined) {
+      assertFiniteNumber(hybrid.semanticWeight, "retrieval.hybrid.semanticWeight");
+      if (hybrid.semanticWeight < 0) {
+        throw new ConfigurationError(
+          "retrieval.hybrid.semanticWeight must be >= 0",
+        );
+      }
+      outHybrid.semanticWeight = hybrid.semanticWeight;
+    }
+
+    if (hybrid.keywordWeight !== undefined) {
+      assertFiniteNumber(hybrid.keywordWeight, "retrieval.hybrid.keywordWeight");
+      if (hybrid.keywordWeight < 0) {
+        throw new ConfigurationError(
+          "retrieval.hybrid.keywordWeight must be >= 0",
+        );
+      }
+      outHybrid.keywordWeight = hybrid.keywordWeight;
+    }
+
+    if (Object.keys(outHybrid).length > 0) {
+      out.hybrid = outHybrid;
+    }
+  }
+
+  if (config.mmr !== undefined) {
+    if (config.mmr === null || typeof config.mmr !== "object") {
+      throw new ConfigurationError("retrieval.mmr must be an object");
+    }
+    const mmr = config.mmr;
+    const outMmr: NonNullable<RetrievalConfig["mmr"]> = {};
+
+    if (mmr.lambda !== undefined) {
+      assertFiniteNumber(mmr.lambda, "retrieval.mmr.lambda");
+      assertNumberInRange(mmr.lambda, "retrieval.mmr.lambda", 0, 1);
+      outMmr.lambda = mmr.lambda;
+    }
+
+    if (Object.keys(outMmr).length > 0) {
+      out.mmr = outMmr;
+    }
+  }
+
+  return out;
+}
+
+function validateMemoryDedupeConfig(config: MemoryDedupeConfig): MemoryDedupeConfig {
+  if (config === null || typeof config !== "object") {
+    throw new ConfigurationError("memory.dedupe must be an object");
+  }
+  const out: MemoryDedupeConfig = {};
+
+  if (config.enabled !== undefined) {
+    if (typeof config.enabled !== "boolean") {
+      throw new ConfigurationError("memory.dedupe.enabled must be a boolean");
+    }
+    out.enabled = config.enabled;
+  }
+
+  if (config.strategy !== undefined) {
+    const allowed = new Set(["exact", "near", "exact-or-near"]);
+    if (!allowed.has(config.strategy)) {
+      throw new ConfigurationError(
+        `memory.dedupe.strategy must be one of ${Array.from(allowed).join(", ")}`,
+      );
+    }
+    out.strategy = config.strategy;
+  }
+
+  if (config.nearThreshold !== undefined) {
+    assertFiniteNumber(config.nearThreshold, "memory.dedupe.nearThreshold");
+    assertNumberInRange(
+      config.nearThreshold,
+      "memory.dedupe.nearThreshold",
+      0,
+      1,
+    );
+    out.nearThreshold = config.nearThreshold;
+  }
+
+  if (config.nearCandidateLimit !== undefined) {
+    assertFiniteNumber(
+      config.nearCandidateLimit,
+      "memory.dedupe.nearCandidateLimit",
+    );
+    assertNumberMin(
+      config.nearCandidateLimit,
+      "memory.dedupe.nearCandidateLimit",
+      1,
+    );
+    out.nearCandidateLimit = config.nearCandidateLimit;
+  }
+
+  return out;
+}
+
+function validateEmbeddingCacheConfig(
+  config: EmbeddingCacheConfig,
+): EmbeddingCacheConfig {
+  if (config === null || typeof config !== "object") {
+    throw new ConfigurationError("embeddingCache must be an object");
+  }
+
+  const out: EmbeddingCacheConfig = {};
+
+  if (config.enabled !== undefined) {
+    if (typeof config.enabled !== "boolean") {
+      throw new ConfigurationError("embeddingCache.enabled must be a boolean");
+    }
+    out.enabled = config.enabled;
+  }
+
+  if (config.ttlMs !== undefined) {
+    assertFiniteNumber(config.ttlMs, "embeddingCache.ttlMs");
+    if (config.ttlMs < 0) {
+      throw new ConfigurationError("embeddingCache.ttlMs must be >= 0");
+    }
+    out.ttlMs = config.ttlMs;
+  }
+
+  if (config.maxEntries !== undefined) {
+    assertFiniteNumber(config.maxEntries, "embeddingCache.maxEntries");
+    if (config.maxEntries < 0) {
+      throw new ConfigurationError("embeddingCache.maxEntries must be >= 0");
+    }
+    out.maxEntries = config.maxEntries;
+  }
+
+  return out;
 }
 
 export function normalizeDatabaseConfig(
@@ -234,10 +414,30 @@ export function validateWolbargOptions(options: WolbargOptions): WolbargOptions 
   }
   assertNonEmpty(options.organization, "organization");
 
+  const checkpointDirectory =
+    options.checkpointDirectory !== undefined
+      ? (() => {
+          assertNonEmpty(options.checkpointDirectory, "checkpointDirectory");
+          return options.checkpointDirectory.trim();
+        })()
+      : undefined;
+
   const storageInput = resolveStorageInput(options);
   let storage: StorageInput = storageInput;
   if (!isStorageProvider(storageInput)) {
     storage = normalizeDatabaseConfig(storageInput);
+  }
+
+  if (
+    !isStorageProvider(storageInput) &&
+    storageInput.provider === "postgres" &&
+    storageInput.maxPoolSize !== undefined
+  ) {
+    assertFiniteNumber(
+      storageInput.maxPoolSize,
+      "database.maxPoolSize",
+    );
+    assertNumberMin(storageInput.maxPoolSize, "database.maxPoolSize", 1);
   }
 
   if (!options.embedding) {
@@ -261,6 +461,19 @@ export function validateWolbargOptions(options: WolbargOptions): WolbargOptions 
     graph = resolveGraphInput(graph);
   }
 
+  const retrieval =
+    options.retrieval !== undefined ? validateRetrievalConfig(options.retrieval) : undefined;
+
+  const embeddingCache =
+    options.embeddingCache !== undefined
+      ? validateEmbeddingCacheConfig(options.embeddingCache)
+      : undefined;
+
+  const memory =
+    options.memory !== undefined && options.memory.dedupe !== undefined
+      ? { ...options.memory, dedupe: validateMemoryDedupeConfig(options.memory.dedupe) }
+      : options.memory;
+
   return {
     ...options,
     organization: options.organization.trim(),
@@ -268,6 +481,10 @@ export function validateWolbargOptions(options: WolbargOptions): WolbargOptions 
     database: undefined,
     ...(telemetry ? { telemetry } : {}),
     ...(graph !== undefined ? { graph } : {}),
+    ...(retrieval !== undefined ? { retrieval } : {}),
+    ...(embeddingCache !== undefined ? { embeddingCache } : {}),
+    ...(checkpointDirectory !== undefined ? { checkpointDirectory } : {}),
+    ...(memory !== undefined ? { memory } : {}),
   };
 }
 

@@ -12,6 +12,8 @@ import type {
 } from "../../telemetry/types.js";
 import { SqliteEventDatabase } from "./sqliteEventDatabase.js";
 
+const MAX_QUEUE_SIZE = 10_000;
+
 export interface SqliteTelemetryProviderOptions {
   url: string;
 }
@@ -23,6 +25,8 @@ export class SqliteTelemetryProvider implements TelemetryProvider {
   private flushing: Promise<void> | null = null;
   private closed = false;
   private openPromise: Promise<void> | null = null;
+  private warnedQueueDrop = false;
+  private warnedFlushFailure = false;
 
   constructor(options: SqliteTelemetryProviderOptions) {
     this.db = new SqliteEventDatabase({ url: options.url });
@@ -46,6 +50,16 @@ export class SqliteTelemetryProvider implements TelemetryProvider {
   emit(event: TelemetryEventInput): void {
     if (this.closed) {
       return;
+    }
+    if (this.queue.length >= MAX_QUEUE_SIZE) {
+      // Drop oldest to keep memory bounded under sustained write failures.
+      this.queue.shift();
+      if (!this.warnedQueueDrop) {
+        this.warnedQueueDrop = true;
+        console.warn(
+          `[wolbarg telemetry] event queue capped at ${MAX_QUEUE_SIZE}; dropping oldest events`,
+        );
+      }
     }
     this.queue.push(event);
     void this.scheduleFlush();
@@ -94,9 +108,15 @@ export class SqliteTelemetryProvider implements TelemetryProvider {
           await this.db.insertEvent(event);
         }
       }
-    } catch {
+    } catch (error) {
       // Telemetry must never crash the host application.
       // Drop failed batch rather than re-queue forever.
+      if (!this.warnedFlushFailure) {
+        this.warnedFlushFailure = true;
+        console.warn(
+          `[wolbarg telemetry] flush failed; dropping batch: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 }

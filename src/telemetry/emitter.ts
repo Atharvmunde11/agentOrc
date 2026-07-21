@@ -129,14 +129,14 @@ export class TelemetryEmitter {
       const errStack =
         error instanceof Error ? error.stack ?? null : fields?.errorStack ?? null;
 
+      if (!self.config.enabled) {
+        return;
+      }
+
       if (status === "error") {
         self.logger.error(`${operation} failed: ${errMessage ?? "unknown"}`);
       } else {
         self.logger.debug(`${operation} completed in ${totalMs.toFixed(2)}ms`);
-      }
-
-      if (!self.config.enabled) {
-        return;
       }
 
       const event: TelemetryEventInput = {

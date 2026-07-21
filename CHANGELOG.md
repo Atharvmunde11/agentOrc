@@ -5,6 +5,42 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] — 2026-07-20
+
+### Added
+
+- **Official framework adapters (`@1.0.0`)** — `@wolbarg/openai`, `@wolbarg/langchain`, `@wolbarg/llamaindex`, `@wolbarg/mastra` (alongside existing `@wolbarg/vercel-ai`)
+- Docs + runnable examples under `examples/adapters/*` and [Integrations](https://wolbarg.com/docs/integrations)
+
+### Compatibility
+
+- Additive only. Core API unchanged from **0.5.2**. Adapter packages peer-depend on `wolbarg >= 0.5.3`.
+
+## [0.5.2] — 2026-07-19
+
+### Added
+
+- **`rememberFromMessages()` (experimental)** — conversation → memory bridge with `mode: "raw"` (default, no LLM) and optional `mode: "extract"` via configured `llm`
+- **Vercel AI SDK adapter example** — `examples/adapters/vercel-ai/` (now uses official `@wolbarg/vercel-ai` middleware)
+- **Companion package `@wolbarg/vercel-ai`** — Language Model Middleware (`wolbargMiddleware` + `wrapLanguageModel`) for automatic recall / remember (published separately under `packages/vercel-ai/`)
+
+### Compatibility
+
+- Additive only. Omit the new method and behavior matches **0.5.1**. Experimental API may change before 1.0 — pin versions if you depend on it.
+- Core `wolbarg` remains framework-agnostic; AI SDK types live only in `@wolbarg/vercel-ai`.
+- `@wolbarg/vercel-ai@1` requires **AI SDK v7+** (`ai@^7`). Upgrade from AI SDK v4 before adopting the middleware.
+
+## [0.5.1] — 2026-07-19
+
+
+### Fixed
+
+- **SQLite vec0 rowid binding on Linux** — bind `memory_rowid` as `BigInt` for `node:sqlite` + sqlite-vec so CI / Linux inserts and KNN search do not fail on integer PK binds
+
+### Compatibility
+
+- Drop-in patch for **0.5.0**. No API or schema changes.
+
 ## [0.5.0] — 2026-07-19
 
 ### Added
@@ -166,6 +202,7 @@ const ctx = wolbarg({
 
 - Initial npm release path (pre–modular storage / ingest)
 
+[0.5.1]: https://github.com/wolbarg/wolbarg/releases/tag/v0.5.1
 [0.5.0]: https://github.com/wolbarg/wolbarg/releases/tag/v0.5.0
 [0.4.0]: https://github.com/wolbarg/wolbarg/releases/tag/v0.4.0
 [0.3.2]: https://github.com/wolbarg/wolbarg/releases/tag/v0.3.2

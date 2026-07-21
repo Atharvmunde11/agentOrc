@@ -19,6 +19,7 @@ import { DatabaseError, InitializationError, ConfigurationError } from "../../er
 import { matchesMetadata } from "../../filters/match.js";
 import { compileMetadataFilterToPostgres } from "../../filters/sql-compile-postgres.js";
 import { SCHEMA_VERSION, META_KEYS } from "../../schema/index.js";
+import { WolbargLogger } from "../../telemetry/logger.js";
 import {
   deserializeMetadata,
   serializeMetadata,
@@ -75,10 +76,15 @@ export interface PostgresProviderOptions {
 
 const txStore = new AsyncLocalStorage<PgPoolClient>();
 
+const warnLogger = new WolbargLogger("warn");
+let warnedPgvectorFallback = false;
+let warnedFtsKeywordSearch = false;
+let warnedHnswSoftFail = false;
+
 /** Statement names for per-connection prepared-statement cache. */
 const STMT = {
   insertOne: "Wolbarg_insert_one_v5",
-  insertBatch: "Wolbarg_insert_batch_v5",
+  insertBatch: "Wolbarg_insert_batch_v6",
 } as const;
 
 /**
@@ -175,13 +181,13 @@ const INSERT_ONE_SQL = `WITH mem AS (
 const INSERT_BATCH_SQL = `WITH mem AS (
    INSERT INTO memories (
      id, organization, agent, content_text, metadata_json,
-     archived, compressed_into, created_at, updated_at
+     archived, compressed_into, content_hash, created_at, updated_at
    )
-   SELECT id, org, agent, txt, meta::jsonb, false, NULL, c, u
+   SELECT id, org, agent, txt, meta::jsonb, false, NULL, h, c, u
    FROM unnest(
      $1::text[], $2::text[], $3::text[], $4::text[],
-     $5::text[], $6::timestamptz[], $7::timestamptz[]
-   ) AS t(id, org, agent, txt, meta, c, u)
+     $5::text[], $6::timestamptz[], $7::timestamptz[], $8::text[]
+   ) AS t(id, org, agent, txt, meta, c, u, h)
    RETURNING id
  ),
  hist AS (
@@ -197,7 +203,7 @@ const INSERT_BATCH_SQL = `WITH mem AS (
  emb AS (
    INSERT INTO memory_embeddings (memory_id, embedding, organization, agent, archived)
    SELECT id, emb::vector, org, agent, false
-   FROM unnest($1::text[], $8::text[], $2::text[], $3::text[]) AS t(id, emb, org, agent)
+   FROM unnest($1::text[], $9::text[], $2::text[], $3::text[]) AS t(id, emb, org, agent)
  )
  SELECT id FROM mem`;
 
@@ -512,6 +518,12 @@ export class PostgresStorageProvider implements StorageProvider {
         return;
       }
       this.hnswCreateFailures += 1;
+      if (this.hnswCreateFailures === 1 && !warnedHnswSoftFail) {
+        warnedHnswSoftFail = true;
+        warnLogger.warn(
+          "HNSW index creation failed; ANN will fall back to sequential scan.",
+        );
+      }
       if (this.hnswCreateFailures >= 3) {
         throw new DatabaseError(
           `Failed to create HNSW index after ${this.hnswCreateFailures} attempts: ${this.describe(error)}`,
@@ -684,6 +696,7 @@ export class PostgresStorageProvider implements StorageProvider {
     const metas = new Array<string>(inputs.length);
     const created = new Array<string>(inputs.length);
     const updated = new Array<string>(inputs.length);
+    const contentHashes = new Array<string | null>(inputs.length);
     const vectors = new Array<string>(inputs.length);
 
     for (let i = 0; i < inputs.length; i += 1) {
@@ -695,6 +708,10 @@ export class PostgresStorageProvider implements StorageProvider {
       metas[i] = serializeMetadata(input.metadata);
       created[i] = input.createdAt;
       updated[i] = input.updatedAt;
+      contentHashes[i] =
+        input.contentHash !== undefined
+          ? input.contentHash
+          : hashMemoryContent(input.contentText);
       vectors[i] = toVectorLiteral(input.embedding);
     }
 
@@ -706,11 +723,12 @@ export class PostgresStorageProvider implements StorageProvider {
       metas,
       created,
       updated,
+      contentHashes,
       vectors,
     ]);
 
     // RETURNING id only — rebuild rows from inputs (avoids shipping JSONB back).
-    return inputs.map((input, i) => ({
+    return inputs.map((_, i) => ({
       id: ids[i]!,
       organization: orgs[i]!,
       agent: agents[i]!,
@@ -718,10 +736,7 @@ export class PostgresStorageProvider implements StorageProvider {
       metadata_json: metas[i]!,
       archived: 0,
       compressed_into: null,
-      content_hash:
-        input.contentHash !== undefined
-          ? input.contentHash
-          : null,
+      content_hash: contentHashes[i] ?? null,
       created_at: created[i]!,
       updated_at: updated[i]!,
     }));
@@ -769,89 +784,93 @@ export class PostgresStorageProvider implements StorageProvider {
   }
 
   private async insertOneBlob(input: InsertMemoryInput): Promise<MemoryRow> {
-    const buf = Buffer.from(
-      input.embedding.buffer,
-      input.embedding.byteOffset,
-      input.embedding.byteLength,
-    );
-    const contentHash =
-      input.contentHash !== undefined
-        ? input.contentHash
-        : hashMemoryContent(input.contentText);
-    const inserted = await this.query(
-      `INSERT INTO memories (
-        id, organization, agent, content_text, metadata_json,
-        archived, compressed_into, content_hash, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,$5::jsonb,false,NULL,$8,$6,$7)
-      RETURNING id, organization, agent, content_text, metadata_json,
-                archived::int AS archived, compressed_into, content_hash, created_at, updated_at`,
-      [
-        input.id,
-        input.organization,
-        input.agent,
-        input.contentText,
-        serializeMetadata(input.metadata),
-        input.createdAt,
-        input.updatedAt,
-        contentHash,
-      ],
-    );
-    const row = this.mapRow(inserted.rows[0]!);
-    await this.query(
-      `WITH mapped AS (
-         INSERT INTO memory_row_map (memory_id) VALUES ($1)
-         ON CONFLICT (memory_id) DO NOTHING
-       )
-       INSERT INTO memory_embeddings_blob (memory_id, embedding)
-       VALUES ($1, $2)
-       ON CONFLICT (memory_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
-      [input.id, buf],
-    );
-    await this.query(
-      `INSERT INTO memory_history (id, memory_id, event_type, related_memory_id, created_at)
-       VALUES ($1,$2,'created',NULL,$3)`,
-      [crypto.randomUUID(), input.id, input.createdAt],
-    );
-    return row;
+    return this.withTransaction(async () => {
+      const buf = Buffer.from(
+        input.embedding.buffer,
+        input.embedding.byteOffset,
+        input.embedding.byteLength,
+      );
+      const contentHash =
+        input.contentHash !== undefined
+          ? input.contentHash
+          : hashMemoryContent(input.contentText);
+      const inserted = await this.query(
+        `INSERT INTO memories (
+          id, organization, agent, content_text, metadata_json,
+          archived, compressed_into, content_hash, created_at, updated_at
+        ) VALUES ($1,$2,$3,$4,$5::jsonb,false,NULL,$8,$6,$7)
+        RETURNING id, organization, agent, content_text, metadata_json,
+                  archived::int AS archived, compressed_into, content_hash, created_at, updated_at`,
+        [
+          input.id,
+          input.organization,
+          input.agent,
+          input.contentText,
+          serializeMetadata(input.metadata),
+          input.createdAt,
+          input.updatedAt,
+          contentHash,
+        ],
+      );
+      const row = this.mapRow(inserted.rows[0]!);
+      await this.query(
+        `WITH mapped AS (
+           INSERT INTO memory_row_map (memory_id) VALUES ($1)
+           ON CONFLICT (memory_id) DO NOTHING
+         )
+         INSERT INTO memory_embeddings_blob (memory_id, embedding)
+         VALUES ($1, $2)
+         ON CONFLICT (memory_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
+        [input.id, buf],
+      );
+      await this.query(
+        `INSERT INTO memory_history (id, memory_id, event_type, related_memory_id, created_at)
+         VALUES ($1,$2,'created',NULL,$3)`,
+        [crypto.randomUUID(), input.id, input.createdAt],
+      );
+      return row;
+    });
   }
 
   async updateMemory(input: UpdateMemoryInput): Promise<MemoryRow | null> {
-    const existing = await this.getMemoryById(input.id, input.organization);
-    if (!existing) {
-      return null;
-    }
-    const contentHash =
-      input.contentHash !== undefined
-        ? input.contentHash
-        : input.contentText !== undefined
-          ? hashMemoryContent(input.contentText)
-          : (existing.content_hash ?? null);
-    await this.query(
-      `UPDATE memories SET
-        content_text = COALESCE($1, content_text),
-        metadata_json = COALESCE($2::jsonb, metadata_json),
-        content_hash = COALESCE($3, content_hash),
-        updated_at = $4
-       WHERE id = $5 AND organization = $6`,
-      [
-        input.contentText ?? null,
-        input.metadata !== undefined ? serializeMetadata(input.metadata) : null,
-        contentHash,
-        input.updatedAt,
-        input.id,
-        input.organization,
-      ],
-    );
-    if (input.embedding) {
-      await this.deleteEmbedding(input.id);
-      await this.insertEmbedding(input.id, input.embedding);
-    }
-    await this.query(
-      `INSERT INTO memory_history (id, memory_id, event_type, related_memory_id, created_at)
-       VALUES ($1,$2,'updated',NULL,$3)`,
-      [crypto.randomUUID(), input.id, input.updatedAt],
-    );
-    return this.getMemoryById(input.id, input.organization);
+    return this.withTransaction(async () => {
+      const existing = await this.getMemoryById(input.id, input.organization);
+      if (!existing) {
+        return null;
+      }
+      const contentHash =
+        input.contentHash !== undefined
+          ? input.contentHash
+          : input.contentText !== undefined
+            ? hashMemoryContent(input.contentText)
+            : (existing.content_hash ?? null);
+      await this.query(
+        `UPDATE memories SET
+          content_text = COALESCE($1, content_text),
+          metadata_json = COALESCE($2::jsonb, metadata_json),
+          content_hash = COALESCE($3, content_hash),
+          updated_at = $4
+         WHERE id = $5 AND organization = $6`,
+        [
+          input.contentText ?? null,
+          input.metadata !== undefined ? serializeMetadata(input.metadata) : null,
+          contentHash,
+          input.updatedAt,
+          input.id,
+          input.organization,
+        ],
+      );
+      if (input.embedding) {
+        await this.deleteEmbedding(input.id);
+        await this.insertEmbedding(input.id, input.embedding);
+      }
+      await this.query(
+        `INSERT INTO memory_history (id, memory_id, event_type, related_memory_id, created_at)
+         VALUES ($1,$2,'updated',NULL,$3)`,
+        [crypto.randomUUID(), input.id, input.updatedAt],
+      );
+      return this.getMemoryById(input.id, input.organization);
+    });
   }
 
   async findActiveByContentHash(
@@ -1028,7 +1047,16 @@ export class PostgresStorageProvider implements StorageProvider {
         memoryId: String(row.memory_id),
         score: Number(row.rank),
       }));
-    } catch {
+    } catch (error) {
+      if (!warnedFtsKeywordSearch) {
+        warnedFtsKeywordSearch = true;
+        warnLogger.warn(
+          "FTS keyword search failed; returning empty keyword hits.",
+          {
+            cause: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
       return [];
     }
   }
@@ -1179,44 +1207,46 @@ export class PostgresStorageProvider implements StorageProvider {
     compressedIntoId: string,
     archivedAt: string,
   ): Promise<string[]> {
-    if (ids.length === 0) {
-      return [];
-    }
-    const result = await this.query(
-      `UPDATE memories
-       SET archived = true, compressed_into = $1, updated_at = $2
-       WHERE organization = $3 AND archived = false AND id = ANY($4::text[])
-       RETURNING id`,
-      [compressedIntoId, archivedAt, organization, ids],
-    );
-    const archived = result.rows.map((r) => String(r.id));
-    if (archived.length === 0) {
-      return [];
-    }
-    await this.query(
-      `UPDATE memory_embeddings
-       SET archived = true
-       WHERE memory_id = ANY($1::text[])`,
-      [archived],
-    ).catch(() => undefined);
-    const histIds: string[] = [];
-    const memIds: string[] = [];
-    const types: string[] = [];
-    const related: string[] = [];
-    const times: string[] = [];
-    for (const id of archived) {
-      histIds.push(crypto.randomUUID(), crypto.randomUUID());
-      memIds.push(id, compressedIntoId);
-      types.push("archived", "compressed");
-      related.push(compressedIntoId, id);
-      times.push(archivedAt, archivedAt);
-    }
-    await this.query(
-      `INSERT INTO memory_history (id, memory_id, event_type, related_memory_id, created_at)
-       SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])`,
-      [histIds, memIds, types, related, times],
-    );
-    return archived;
+    return this.withTransaction(async () => {
+      if (ids.length === 0) {
+        return [];
+      }
+      const result = await this.query(
+        `UPDATE memories
+         SET archived = true, compressed_into = $1, updated_at = $2
+         WHERE organization = $3 AND archived = false AND id = ANY($4::text[])
+         RETURNING id`,
+        [compressedIntoId, archivedAt, organization, ids],
+      );
+      const archived = result.rows.map((r) => String(r.id));
+      if (archived.length === 0) {
+        return [];
+      }
+      await this.query(
+        `UPDATE memory_embeddings
+         SET archived = true
+         WHERE memory_id = ANY($1::text[])`,
+        [archived],
+      );
+      const histIds: string[] = [];
+      const memIds: string[] = [];
+      const types: string[] = [];
+      const related: string[] = [];
+      const times: string[] = [];
+      for (const id of archived) {
+        histIds.push(crypto.randomUUID(), crypto.randomUUID());
+        memIds.push(id, compressedIntoId);
+        types.push("archived", "compressed");
+        related.push(compressedIntoId, id);
+        times.push(archivedAt, archivedAt);
+      }
+      await this.query(
+        `INSERT INTO memory_history (id, memory_id, event_type, related_memory_id, created_at)
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::timestamptz[])`,
+        [histIds, memIds, types, related, times],
+      );
+      return archived;
+    });
   }
 
   async deleteMemoryById(id: string, organization: string): Promise<boolean> {
@@ -1349,6 +1379,12 @@ export class PostgresStorageProvider implements StorageProvider {
       versionRow.rows[0]?.value !== undefined
         ? Number(versionRow.rows[0].value)
         : null;
+
+    if (current !== null && current > SCHEMA_VERSION) {
+      throw new InitializationError(
+        `Database schema version ${current} is newer than this Wolbarg SDK (${SCHEMA_VERSION}). Please upgrade Wolbarg to open this database.`,
+      );
+    }
 
     // Fast path: schema already current — skip DDL churn and hash backfill.
     if (current === SCHEMA_VERSION) {
@@ -1519,8 +1555,18 @@ export class PostgresStorageProvider implements StorageProvider {
       await this.query(`CREATE EXTENSION IF NOT EXISTS vector`);
       PostgresStorageProvider.pgvectorByConn.set(this.connectionString, true);
       return true;
-    } catch {
+    } catch (error) {
       PostgresStorageProvider.pgvectorByConn.set(this.connectionString, false);
+      if (!warnedPgvectorFallback) {
+        warnedPgvectorFallback = true;
+        warnLogger.warn(
+          "pgvector extension is unavailable; using blob cosine search fallback.",
+          {
+            cause:
+              error instanceof Error ? error.message : `unknown error: ${String(error)}`,
+          },
+        );
+      }
       return false;
     }
   }

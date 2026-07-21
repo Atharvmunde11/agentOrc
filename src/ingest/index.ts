@@ -151,16 +151,38 @@ export class DocxParser implements DocumentParserProvider {
     filename?: string;
     mimeType?: string;
   }): Promise<ParsedDocument> {
+    let mod: unknown;
     try {
-      const mod = await import("mammoth" as string);
-      const extractRawText =
-        (mod as { extractRawText?: (opts: { buffer: Buffer }) => Promise<{ value: string }> })
-          .extractRawText ??
-        (mod as { default?: { extractRawText: (opts: { buffer: Buffer }) => Promise<{ value: string }> } })
-          .default?.extractRawText;
-      if (!extractRawText) {
-        throw new Error("mammoth.extractRawText unavailable");
-      }
+      mod = await import("mammoth" as string);
+    } catch (error) {
+      throw new ConfigurationError(
+        'DOCX ingest requires the optional peer package "mammoth". Install it with: npm install mammoth',
+        {
+          cause: error instanceof Error ? error : undefined,
+          suggestion: "npm install mammoth",
+          operation: "parse",
+        },
+      );
+    }
+
+    const extractRawText =
+      (mod as {
+        extractRawText?: (opts: { buffer: Buffer }) => Promise<{ value: string }>;
+      }).extractRawText ??
+      (mod as {
+        default?: {
+          extractRawText: (opts: { buffer: Buffer }) => Promise<{ value: string }>;
+        };
+      }).default?.extractRawText;
+
+    if (!extractRawText) {
+      throw new ConfigurationError(
+        "DOCX ingest could not find mammoth.extractRawText. Ensure your mammoth version is compatible.",
+        { operation: "parse" },
+      );
+    }
+
+    try {
       const result = await extractRawText({ buffer: input.buffer });
       return {
         text: result.value ?? "",
@@ -169,9 +191,14 @@ export class DocxParser implements DocumentParserProvider {
         filename: input.filename,
         isImage: false,
       };
-    } catch {
+    } catch (error) {
       throw new ConfigurationError(
-        'DOCX ingest requires the optional "mammoth" package. Install it with: npm install mammoth',
+        "DOCX ingest failed to parse the document (it may be corrupt or an unsupported .docx).",
+        {
+          cause: error instanceof Error ? error : undefined,
+          suggestion: "Try a different DOCX file or ensure it is not password-protected.",
+          operation: "parse",
+        },
       );
     }
   }

@@ -169,25 +169,35 @@ export class Neo4jGraphProvider implements GraphProvider {
     cypher: string,
     params: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>[]> {
-    return this.withSession(async (session) => {
-      const result = await session.run(cypher, params);
-      return result.records.map((rec) => {
-        try {
-          return rec.toObject();
-        } catch {
-          const obj: Record<string, unknown> = {};
-          for (const key of rec.keys) {
-            obj[key] = unwrapNeo4jValue(rec.get(key));
-          }
-          return obj;
+    return this.withSession((session) =>
+      this.runOnSession(session, cypher, params),
+    );
+  }
+
+  private async runOnSession(
+    session: Neo4jSession,
+    cypher: string,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>[]> {
+    const result = await session.run(cypher, params);
+    return result.records.map((rec) => {
+      try {
+        return rec.toObject();
+      } catch {
+        const obj: Record<string, unknown> = {};
+        for (const key of rec.keys) {
+          obj[key] = unwrapNeo4jValue(rec.get(key));
         }
-      });
+        return obj;
+      }
     });
   }
 
-  private async ensureMemoryNode(id: string): Promise<void> {
-    await this.run(
-      `MERGE (m:Memory { id: $id })
+  private async ensureMemoryNode(
+    id: string,
+    session?: Neo4jSession,
+  ): Promise<void> {
+    const cypher = `MERGE (m:Memory { id: $id })
        ON CREATE SET
          m.organization = '',
          m.agent = '',
@@ -196,9 +206,13 @@ export class Neo4jGraphProvider implements GraphProvider {
          m.archived = false,
          m.compressed_into = '',
          m.created_at = '',
-         m.updated_at = ''`,
-      { id },
-    );
+         m.updated_at = ''`;
+
+    if (session) {
+      await this.runOnSession(session, cypher, { id });
+      return;
+    }
+    await this.run(cypher, { id });
   }
 
   async linkMemories(
@@ -207,19 +221,23 @@ export class Neo4jGraphProvider implements GraphProvider {
     relation: string,
     metadata?: Record<string, unknown>,
   ): Promise<void> {
-    await this.ensureMemoryNode(fromId);
-    await this.ensureMemoryNode(toId);
-    await this.run(
-      `MATCH (a:Memory { id: $fromId }), (b:Memory { id: $toId })
-       MERGE (a)-[r:RELATED { relation: $relation }]->(b)
-       SET r.metadata_json = $metadata`,
-      {
-        fromId,
-        toId,
-        relation,
-        metadata: serializeMetadata(metadata),
-      },
-    );
+    // Single session for the whole typed write (avoid 3 separate sessions).
+    await this.withSession(async (session) => {
+      await this.ensureMemoryNode(fromId, session);
+      await this.ensureMemoryNode(toId, session);
+      await this.runOnSession(
+        session,
+        `MATCH (a:Memory { id: $fromId }), (b:Memory { id: $toId })
+         MERGE (a)-[r:RELATED { relation: $relation }]->(b)
+         SET r.metadata_json = $metadata`,
+        {
+          fromId,
+          toId,
+          relation,
+          metadata: serializeMetadata(metadata),
+        },
+      );
+    });
   }
 
   async unlinkMemories(
@@ -309,22 +327,27 @@ export class Neo4jGraphProvider implements GraphProvider {
     memoryId: string,
     role?: string,
   ): Promise<void> {
-    await this.ensureMemoryNode(memoryId);
-    const found = await this.run(
-      `MATCH (e:Entity { id: $id }) RETURN e.id AS id`,
-      { id: entityId },
-    );
-    if (found.length === 0) {
-      throw new DatabaseError(`Entity not found: ${entityId}`, {
-        operation: "linkEntityToMemory",
-      });
-    }
-    await this.run(
-      `MATCH (e:Entity { id: $entityId }), (m:Memory { id: $memoryId })
-       MERGE (e)-[r:MENTIONS]->(m)
-       SET r.role = $role`,
-      { entityId, memoryId, role: role ?? "" },
-    );
+    // Single session for the whole typed write (avoid 3 separate sessions).
+    await this.withSession(async (session) => {
+      await this.ensureMemoryNode(memoryId, session);
+      const found = await this.runOnSession(
+        session,
+        `MATCH (e:Entity { id: $id }) RETURN e.id AS id`,
+        { id: entityId },
+      );
+      if (found.length === 0) {
+        throw new DatabaseError(`Entity not found: ${entityId}`, {
+          operation: "linkEntityToMemory",
+        });
+      }
+      await this.runOnSession(
+        session,
+        `MATCH (e:Entity { id: $entityId }), (m:Memory { id: $memoryId })
+         MERGE (e)-[r:MENTIONS]->(m)
+         SET r.role = $role`,
+        { entityId, memoryId, role: role ?? "" },
+      );
+    });
   }
 
   async deleteMemory(memoryId: string): Promise<void> {

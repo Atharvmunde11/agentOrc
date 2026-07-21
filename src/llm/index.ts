@@ -1,6 +1,6 @@
 /**
  * LLM provider abstractions and OpenAI-compatible chat implementation.
- * Used exclusively for memory compression (and future ORC features).
+ * Used for memory compression and experimental rememberFromMessages extract mode.
  */
 
 import type { LlmConfig } from "../types/index.js";

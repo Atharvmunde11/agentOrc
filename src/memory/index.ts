@@ -54,3 +54,11 @@ export type {
   MemoryTransferProvider,
 } from "./transfer.js";
 
+export {
+  normalizeConversationMessages,
+  resolveRememberFromMessagesOptions,
+  selectRawUserTexts,
+  buildExtractMessages,
+  parseExtractedFacts,
+} from "./from-messages.js";
+

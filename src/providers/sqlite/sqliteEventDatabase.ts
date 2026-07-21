@@ -277,8 +277,11 @@ export class SqliteEventDatabase implements EventDatabase {
       }
     }
     if (options.memoryId) {
-      clauses.push(`memory_ids_json LIKE ?`);
-      params.push(`%${options.memoryId}%`);
+      // Exact membership match (avoid substring false-positives).
+      clauses.push(
+        `EXISTS (SELECT 1 FROM json_each(memory_ids_json) WHERE json_each.value = ?)`,
+      );
+      params.push(options.memoryId);
     }
     if (options.queryText) {
       clauses.push(`query LIKE ?`);

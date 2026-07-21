@@ -13,7 +13,9 @@ import {
   wolbarg,
 } from "../src/index.js";
 import { validateTelemetryConfig, validateWolbargOptions } from "../src/core/validate.js";
-import { InMemoryKuzuSemanticsGraph } from "./in-memory-kuzu-semantics.js";
+import {
+  InMemorySemanticsGraph as InMemoryKuzuSemanticsGraph,
+} from "./in-memory-kuzu-semantics.js";
 import { installFetchMock } from "./helpers.js";
 
 describe("graph facade", () => {

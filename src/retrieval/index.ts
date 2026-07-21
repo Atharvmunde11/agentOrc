@@ -91,7 +91,11 @@ export function applyMmr(
         );
       }
       const score = lambda * relevance - (1 - lambda) * maxSim;
-      if (score > bestScore) {
+        const best = remaining[bestIdx]!;
+        if (
+          score > bestScore ||
+          (score === bestScore && candidate.id < best.id)
+        ) {
         bestScore = score;
         bestIdx = i;
       }

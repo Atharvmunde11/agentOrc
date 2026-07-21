@@ -6,6 +6,7 @@
 /** Public operation names recorded as telemetry events. */
 export type TelemetryOperation =
   | "remember"
+  | "update"
   | "recall"
   | "forget"
   | "compress"
@@ -27,7 +28,8 @@ export type TelemetryOperation =
   | "getCheckpoint"
   | "linkMemories"
   | "getRelated"
-  | "graphQuery";
+  | "graphQuery"
+  | "rememberFromMessages";
 
 export type TelemetryStatus = "ok" | "error" | "cancelled";
 

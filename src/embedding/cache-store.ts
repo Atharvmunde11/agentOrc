@@ -8,6 +8,7 @@
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import type { EmbeddingCacheStore } from "./cache.js";
 import { embeddingToBuffer } from "../utils/index.js";
+import { bufferToEmbedding } from "../utils/vector.js";
 
 export const CREATE_EMBEDDING_CACHE_TABLE = `
 CREATE TABLE IF NOT EXISTS embedding_cache (
@@ -141,7 +142,9 @@ export class SqliteEmbeddingCacheStore implements EmbeddingCacheStore {
     }
     this.stmts = {
       get: db.prepare(
-        `SELECT vector, last_used_at, created_at FROM embedding_cache WHERE cache_key = ?`,
+        `SELECT model, vector, last_used_at, created_at
+         FROM embedding_cache
+         WHERE cache_key = ?`,
       ),
       delete: db.prepare(`DELETE FROM embedding_cache WHERE cache_key = ?`),
       set: db.prepare(
@@ -178,9 +181,38 @@ export class SqliteEmbeddingCacheStore implements EmbeddingCacheStore {
       this.l1.set(cacheKey, pending.model, pending.vector);
       return pending.vector;
     }
-    // No synchronous durable read on the hot path — that contends with
-    // BEGIN IMMEDIATE writers. Cold process restart still misses once.
-    return null;
+
+    // Cold-path durable read: restore cache after process restart.
+    const db = this.requireDb();
+    if (!db) return null;
+    try {
+      const stmts = this.ensureStatements(db);
+      const row = stmts.get.get(cacheKey) as
+        | { model: string; vector: Uint8Array | Buffer; created_at: string | null }
+        | undefined;
+      if (!row) return null;
+
+      if (this.ttlMs !== null) {
+        const createdMs = row.created_at ? Date.parse(row.created_at) : 0;
+        if (createdMs && Date.now() - createdMs > this.ttlMs) {
+          stmts.delete.run(cacheKey);
+          return null;
+        }
+      }
+
+      const vector = bufferToEmbedding(row.vector);
+      this.l1.set(cacheKey, row.model, vector);
+
+      // Update durable LRU asynchronously via pendingTouches.
+      this.pendingTouches.add(cacheKey);
+      if (this.pendingTouches.size >= TOUCH_FLUSH_THRESHOLD) {
+        this.schedulePersist();
+      }
+
+      return vector;
+    } catch {
+      return null;
+    }
   }
 
   async set(
@@ -243,6 +275,17 @@ export class SqliteEmbeddingCacheStore implements EmbeddingCacheStore {
     this.pendingSets.clear();
     const touches = [...this.pendingTouches];
     this.pendingTouches.clear();
+
+    const requeue = (): void => {
+      for (const [key, value] of sets) {
+        this.pendingSets.set(key, value);
+      }
+      for (const key of touches) {
+        this.pendingTouches.add(key);
+      }
+      this.stmts = null; // force re-prepare on retry
+      this.schedulePersist();
+    };
     const now = new Date().toISOString();
     try {
       const stmts = this.ensureStatements(db);
@@ -280,10 +323,10 @@ export class SqliteEmbeddingCacheStore implements EmbeddingCacheStore {
         } catch {
           // ignore
         }
-        this.stmts = null;
+        requeue();
       }
     } catch {
-      this.stmts = null;
+      requeue();
     }
   }
 }

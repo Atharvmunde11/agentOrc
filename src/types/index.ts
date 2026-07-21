@@ -104,7 +104,7 @@ export interface MmrConfig {
 
 /** Retrieval pipeline defaults applied when constructing Wolbarg. */
 export interface RetrievalConfig {
-  /** Default over-fetch multiplier for candidate generation. Defaults to 4. */
+  /** Default over-fetch multiplier for candidate generation. Defaults to 2 (no filters) or 4 (with metadata filters). */
   overFetchFactor?: number;
   /** Default hybrid fusion weights. */
   hybrid?: HybridConfig;
@@ -165,6 +165,38 @@ export interface RememberOptions {
   /** Content to store and embed. */
   content: MemoryContent;
   /** Optional opaque metadata. Stored and returned as-is. */
+  metadata?: MemoryMetadata;
+  /** Per-call dedupe override; undefined uses constructor `memory.dedupe`. */
+  dedupe?: boolean | MemoryDedupeConfig;
+}
+
+/**
+ * Chat turn for {@link Wolbarg.rememberFromMessages}.
+ * @experimental until 1.0
+ */
+export interface ConversationMessage {
+  role: string;
+  content: string;
+}
+
+/** How `mode: "raw"` selects user turns to store. */
+export type RememberFromMessagesRawStrategy = "last_user" | "all_user";
+
+/**
+ * Options for {@link Wolbarg.rememberFromMessages}.
+ * @experimental until 1.0
+ */
+export interface RememberFromMessagesOptions {
+  /** Agent identifier that owns the stored memories. */
+  agent: string;
+  /**
+   * `raw` (default) — store user message text without an LLM.
+   * `extract` — use configured `llm` to extract atomic facts, then remember each.
+   */
+  mode?: "raw" | "extract";
+  /** Used when `mode` is `raw`. Defaults to `last_user`. */
+  rawStrategy?: RememberFromMessagesRawStrategy;
+  /** Optional opaque metadata attached to every stored memory. */
   metadata?: MemoryMetadata;
   /** Per-call dedupe override; undefined uses constructor `memory.dedupe`. */
   dedupe?: boolean | MemoryDedupeConfig;

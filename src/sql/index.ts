@@ -70,7 +70,7 @@ export const SQL = {
   `,
 
   insertEmbeddingBlob: `
-    INSERT INTO memory_embeddings_blob (memory_rowid, embedding) VALUES (?, ?)
+    INSERT OR REPLACE INTO memory_embeddings_blob (memory_rowid, embedding) VALUES (?, ?)
   `,
 
   deleteEmbeddingBlob: `

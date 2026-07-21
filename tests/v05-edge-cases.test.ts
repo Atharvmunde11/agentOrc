@@ -21,7 +21,9 @@ import {
   validateTelemetryConfig,
   validateWolbargOptions,
 } from "../src/core/validate.js";
-import { InMemoryKuzuSemanticsGraph } from "./in-memory-kuzu-semantics.js";
+import {
+  InMemorySemanticsGraph as InMemoryKuzuSemanticsGraph,
+} from "./in-memory-kuzu-semantics.js";
 import { installFetchMock } from "./helpers.js";
 import { createMockNeo4jModule } from "./mock-neo4j-driver.js";
 import { SqliteGraphProvider } from "../src/graph/providers/sqlite-graph.js";
@@ -423,6 +425,34 @@ describe("v0.5 brutal edge cases — Wolbarg facade", () => {
     const hit = hits.find((h) => h.id === a.id);
     expect(hit?.related?.length).toBeGreaterThan(0);
     expect(hit?.related?.[0]?.content.text).toContain("hydrate target");
+    await ctx.close();
+  });
+
+  it("explain + includeGraph hydrates related content in explain path", async () => {
+    const graph = new InMemoryKuzuSemanticsGraph();
+    const ctx = await makeClient(graph);
+    const a = await ctx.remember({
+      agent: "bot",
+      content: { text: "explain hydrate source unique phrase" },
+    });
+    const b = await ctx.remember({
+      agent: "bot",
+      content: { text: "explain hydrate target unique phrase" },
+    });
+    await ctx.linkMemories(a.id, b.id, "related");
+
+    const explained = await ctx.recall({
+      query: "explain hydrate source unique phrase",
+      topK: 5,
+      includeGraph: true,
+      explain: true,
+    });
+
+    const hit = explained.results.find((h) => h.memory.id === a.id);
+    expect(hit?.memory.related?.length).toBeGreaterThan(0);
+    expect(hit?.memory.related?.[0]?.content.text).toContain(
+      "explain hydrate target",
+    );
     await ctx.close();
   });
 

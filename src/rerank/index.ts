@@ -84,7 +84,17 @@ class HttpRerankerProvider implements RerankerProvider {
         }));
       }
       const parsed = this.options.parseResults(body, documents);
-      return parsed.slice(0, topK);
+      const hits = parsed.slice(0, topK);
+      // Some providers return 200 with an unexpected shape; in that case
+      // `parseResults` can legitimately return `[]`. Fallback to identity
+      // order so recall never collapses to zero hits.
+      if (hits.length === 0) {
+        return documents.slice(0, topK).map((d, i) => ({
+          id: d.id,
+          score: 1 - i / Math.max(documents.length, 1),
+        }));
+      }
+      return hits;
     } catch {
       return documents.slice(0, topK).map((d, i) => ({
         id: d.id,

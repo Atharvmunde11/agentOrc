@@ -26,8 +26,8 @@ type Rel = {
 
 type Mention = { entityId: string; memoryId: string; role: string };
 
-export class InMemoryKuzuSemanticsGraph implements GraphProvider {
-  readonly name = "kuzu"; // intentional: stand-in for kuzu semantics in CI
+export class InMemorySemanticsGraph implements GraphProvider {
+  readonly name = "in-memory"; // CI stand-in for the typed graph contract
   private memories = new Set<string>();
   private entities = new Map<string, GraphEntityInput & { id: string }>();
   private related: Rel[] = [];
@@ -170,7 +170,7 @@ export class InMemoryKuzuSemanticsGraph implements GraphProvider {
   async health(): Promise<GraphHealthResult> {
     return {
       ok: this.opened,
-      backend: "kuzu",
+      backend: "in-memory",
       details: { inMemoryStandIn: true },
     };
   }

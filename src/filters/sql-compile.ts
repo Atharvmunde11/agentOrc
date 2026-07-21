@@ -33,6 +33,15 @@ function compileComparison(
 
   if ("eq" in op) {
     const value = op.eq;
+    // SQLite treats `NULL = NULL` as NULL (unknown), so `IS NULL` isn't enough
+    // to distinguish explicit JSON null vs missing keys. Use json_type(...)
+    // which returns the string "null" only for explicit JSON null.
+    if (value === null) {
+      return {
+        expression: `json_type(metadata_json, '${path}') = 'null'`,
+        params: [],
+      };
+    }
     if (
       value !== null &&
       typeof value !== "string" &&

@@ -18,6 +18,7 @@ import * as sqliteVec from "sqlite-vec";
 import { DatabaseError, InitializationError } from "../../errors/index.js";
 import { matchesMetadata } from "../../filters/match.js";
 import { compileMetadataFilterToSql } from "../../filters/sql-compile.js";
+import { WolbargLogger } from "../../telemetry/logger.js";
 import {
   CREATE_BLOB_EMBEDDINGS_TABLE,
   CREATE_EMBEDDING_CACHE_TABLE,
@@ -74,6 +75,10 @@ const MAX_ANN_OVERFETCH = 8192;
 const INSERT_COALESCE_THRESHOLD = 24;
 const INSERT_COALESCE_MAX = 96;
 
+const warnLogger = new WolbargLogger("warn");
+let warnedSqliteVecFallback = false;
+let warnedFtsKeywordSearch = false;
+
 interface PreparedStatements {
   getMeta: StatementSync;
   setMeta: StatementSync;
@@ -125,6 +130,10 @@ export class SqliteStorageProvider implements StorageProvider {
   private vectorDimensions: number | null = null;
   private vectorBackend: VectorBackend | null = null;
   private sqliteVecLoaded = false;
+  /** Tracks nesting depth for {@link withTransaction} so we can use savepoints. */
+  private transactionDepth = 0;
+  /** Incrementing counter for deterministic savepoint names. */
+  private savepointCounter = 0;
   /** Hot in-process ANN for blob backend (sqlite-vec unavailable platforms). */
   private memoryIndex: InMemoryVectorIndex | null = null;
   private memoryIndexDirty = false;
@@ -210,6 +219,12 @@ export class SqliteStorageProvider implements StorageProvider {
       } else if (this.sqliteVecLoaded) {
         this.vectorBackend = "sqlite-vec";
       } else {
+        if (!warnedSqliteVecFallback) {
+          warnedSqliteVecFallback = true;
+          warnLogger.warn(
+            "sqlite-vec unavailable on this platform; using blob ANN fallback.",
+          );
+        }
         this.vectorBackend = "blob";
       }
 
@@ -514,6 +529,12 @@ export class SqliteStorageProvider implements StorageProvider {
   ): Promise<Array<{ memoryId: string; score: number }>> {
     const stmts = this.requireStatements();
     if (!stmts.searchFts) {
+      if (!warnedFtsKeywordSearch) {
+        warnedFtsKeywordSearch = true;
+        warnLogger.warn(
+          "FTS keyword search is unavailable; returning empty keyword hits.",
+        );
+      }
       return [];
     }
     try {
@@ -530,7 +551,16 @@ export class SqliteStorageProvider implements StorageProvider {
         // bm25 returns lower (more negative) for better matches — invert to [0, ∞)
         score: 1 / (1 + Math.abs(row.rank)),
       }));
-    } catch {
+    } catch (error) {
+      if (!warnedFtsKeywordSearch) {
+        warnedFtsKeywordSearch = true;
+        warnLogger.warn(
+          "FTS keyword search failed; returning empty keyword hits.",
+          {
+            cause: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
       return [];
     }
   }
@@ -747,6 +777,15 @@ export class SqliteStorageProvider implements StorageProvider {
       this.deleteEmbeddingsForScope(organization);
       this.deleteFtsForScope(organization);
       const result = stmts.deleteMemoriesByOrg.run(organization);
+      // Remove orphaned blob rows (memories may already be empty).
+      try {
+        this.requireDb().exec(`
+          DELETE FROM memory_embeddings_blob
+          WHERE memory_rowid NOT IN (SELECT rowid FROM memories)
+        `);
+      } catch {
+        // ignore if blob table missing
+      }
       return Number(result.changes);
     });
   }
@@ -828,16 +867,44 @@ export class SqliteStorageProvider implements StorageProvider {
 
   async withTransaction<T>(fn: () => T | Promise<T>): Promise<T> {
     const db = this.requireDb();
-    return withImmediateTransaction(
-      db,
-      this.concurrency,
-      fn,
-      (attempt, delayMs) => {
-        this.retryLog?.(
-          `SQLITE_BUSY retry attempt=${attempt} backoffMs=${Math.round(delayMs)}`,
-        );
-      },
-    );
+    // Nested writes can happen (e.g. compress() wrapping storage.withTransaction()
+    // while provider methods also use withTransaction internally).
+    // SQLite forbids BEGIN/COMMIT inside a transaction, so we use SAVEPOINTs.
+    if (this.transactionDepth > 0) {
+      const savepointName = `wolbarg_sp_${this.savepointCounter++}`;
+      db.exec(`SAVEPOINT ${savepointName}`);
+      try {
+        this.transactionDepth += 1;
+        const result = await fn();
+        db.exec(`RELEASE SAVEPOINT ${savepointName}`);
+        return result;
+      } catch (error) {
+        try {
+          db.exec(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+        } catch {
+          // ignore rollback-to-savepoint failures; original error is more important
+        }
+        throw error;
+      } finally {
+        this.transactionDepth -= 1;
+      }
+    }
+
+    this.transactionDepth = 1;
+    try {
+      return await withImmediateTransaction(
+        db,
+        this.concurrency,
+        fn,
+        (attempt, delayMs) => {
+          this.retryLog?.(
+            `SQLITE_BUSY retry attempt=${attempt} backoffMs=${Math.round(delayMs)}`,
+          );
+        },
+      );
+    } finally {
+      this.transactionDepth = 0;
+    }
   }
 
   // ─── internals ───────────────────────────────────────────────────────────
@@ -1382,7 +1449,7 @@ export class SqliteStorageProvider implements StorageProvider {
     if (!stmt) {
       const values = Array.from({ length: n }, () => "(?, ?)").join(", ");
       stmt = this.requireDb().prepare(
-        `INSERT INTO memory_embeddings_blob (memory_rowid, embedding) VALUES ${values}`,
+        `INSERT OR REPLACE INTO memory_embeddings_blob (memory_rowid, embedding) VALUES ${values}`,
       );
       this.batchBlobEmbStatements.set(n, stmt);
     }

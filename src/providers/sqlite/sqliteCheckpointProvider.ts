@@ -77,9 +77,21 @@ export class SqliteCheckpointProvider implements CheckpointProvider {
     }
 
     const snapshotPath = this.snapshotPath(name);
-    await safeSqliteBackup(resolvedSource, snapshotPath);
+    const tmpSnapshotPath = `${snapshotPath}.tmp-${Date.now()}`;
+    try {
+      await safeSqliteBackup(resolvedSource, tmpSnapshotPath);
+    } catch (error) {
+      if (fs.existsSync(tmpSnapshotPath)) {
+        fs.rmSync(tmpSnapshotPath, { force: true });
+      }
+      throw error;
+    }
 
-    const stats = fs.statSync(snapshotPath);
+    const stats = fs.statSync(tmpSnapshotPath);
+    if (fs.existsSync(snapshotPath)) {
+      fs.rmSync(snapshotPath, { force: true });
+    }
+    fs.renameSync(tmpSnapshotPath, snapshotPath);
     const meta: CheckpointRecord = {
       name,
       description: options?.description ?? null,
@@ -90,7 +102,10 @@ export class SqliteCheckpointProvider implements CheckpointProvider {
       sourcePath: resolvedSource,
       sizeBytes: stats.size,
     };
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+
+    const tmpMetaPath = `${metaPath}.tmp-${Date.now()}`;
+    fs.writeFileSync(tmpMetaPath, JSON.stringify(meta, null, 2), "utf8");
+    fs.renameSync(tmpMetaPath, metaPath);
     return meta;
   }
 

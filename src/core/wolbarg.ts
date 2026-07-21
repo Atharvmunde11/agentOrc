@@ -116,9 +116,18 @@ import type {
   RecallResult,
   RememberOptions,
   RememberResult,
+  ConversationMessage,
+  RememberFromMessagesOptions,
   RetrievalConfig,
   StatsResult,
 } from "../types/index.js";
+import {
+  normalizeConversationMessages,
+  resolveRememberFromMessagesOptions,
+  selectRawUserTexts,
+  buildExtractMessages,
+  parseExtractedFacts,
+} from "../memory/from-messages.js";
 import type { GraphProvider, GetRelatedOptions } from "../graph/types.js";
 import {
   AsyncMutex,
@@ -144,6 +153,7 @@ import {
 import { validateWolbargOptions, validateInitOptions } from "./validate.js";
 import {
   TelemetryEmitter,
+  WolbargLogger,
 } from "../telemetry/index.js";
 import type { PersistedRecallExplainPayload } from "../telemetry/index.js";
 import type { OperationTraceHandle } from "../telemetry/emitter.js";
@@ -166,6 +176,10 @@ type ReadyState = {
   embedding: EmbeddingProvider;
   organization: string;
 };
+
+const warnLogger = new WolbargLogger("warn");
+let warnedHybridNoKeyword = false;
+let warnedRerankNoProvider = false;
 
 export class Wolbarg<HasLlm extends boolean = false> {
   declare readonly __hasLlm: HasLlm;
@@ -305,6 +319,9 @@ export class Wolbarg<HasLlm extends boolean = false> {
     this.storage = createStorageProvider(validated.database);
     this.memoryDbPath = resolveDatabaseUrl(validated.database);
     this.embedding = createEmbeddingProvider(validated.embedding);
+    // v0.1 init() path: default-on embedding cache wrapper expects
+    // `rawEmbedding` to be set (constructor sets it already).
+    this.rawEmbedding = this.embedding;
     if (validated.llm) {
       this.llm = createLlmProvider(validated.llm);
       this.compression = createCompressionProvider(this.llm);
@@ -578,6 +595,90 @@ export class Wolbarg<HasLlm extends boolean = false> {
   }
 
   /**
+   * Store memories from a chat transcript.
+   *
+   * **Experimental** until 1.0 — API shape may change.
+   *
+   * - `mode: "raw"` (default) — remember user message text (no LLM).
+   * - `mode: "extract"` — require configured `llm`; extract atomic facts then remember each.
+   */
+  async rememberFromMessages(
+    messages: ConversationMessage[],
+    options: RememberFromMessagesOptions,
+  ): Promise<RememberResult[]> {
+    const parent = this.telemetry.start("rememberFromMessages");
+    try {
+      const normalized = normalizeConversationMessages(messages);
+      const resolved = resolveRememberFromMessagesOptions(options);
+
+      let texts: string[];
+      if (resolved.mode === "extract") {
+        if (!this.llm) {
+          throw new ProviderNotConfiguredError(
+            "llm",
+            "rememberFromMessages",
+            'pass llm: openaiLlm(...) in the constructor when mode is "extract"',
+          );
+        }
+        const llmOutput = await this.llm.complete(
+          buildExtractMessages(normalized),
+        );
+        texts = parseExtractedFacts(llmOutput);
+        if (texts.length === 0) {
+          parent.success({
+            returnedCount: 0,
+            agentId: resolved.agent,
+            extra: { mode: "extract", factCount: 0 },
+          });
+          return [];
+        }
+      } else {
+        texts = selectRawUserTexts(normalized, resolved.rawStrategy);
+      }
+
+      const out: RememberResult[] = [];
+      for (const text of texts) {
+        const child = parent.child("remember");
+        const result = await this.rememberOne(
+          {
+            agent: resolved.agent,
+            content: { text },
+            ...(resolved.metadata !== undefined
+              ? { metadata: resolved.metadata }
+              : {}),
+            ...(resolved.dedupe !== undefined ? { dedupe: resolved.dedupe } : {}),
+          },
+          child,
+        );
+        child.success({
+          provider: this.storage?.name,
+          memoryIds: [result.id],
+          returnedCount: 1,
+          metadata: result.metadata,
+          agentId: result.agent,
+          tags: telemetryTags(result.metadata),
+          extra: { upsertAction: result.action, mode: resolved.mode },
+        });
+        out.push(result);
+      }
+
+      parent.success({
+        provider: this.storage?.name,
+        memoryIds: out.map((r) => r.id),
+        returnedCount: out.length,
+        embeddingProvider: this.embedding?.model,
+        model: this.embedding?.model,
+        agentId: resolved.agent,
+        extra: { mode: resolved.mode },
+      });
+      return out;
+    } catch (error) {
+      parent.failure(error, { agentId: options?.agent });
+      throw wrapOperationError("rememberFromMessages", error);
+    }
+  }
+
+  /**
    * Update an existing memory by id (re-embeds when content changes).
    */
   async update(options: {
@@ -585,7 +686,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
     content?: { text: string };
     metadata?: MemoryMetadata;
   }): Promise<RememberResult> {
-    const trace = this.telemetry.start("remember");
+    const trace = this.telemetry.start("update");
     try {
       const { storage, embedding, organization } = await this.requireReady();
       assertNonEmptyString(options.id, "id");
@@ -1202,10 +1303,24 @@ export class Wolbarg<HasLlm extends boolean = false> {
         }
       }
 
+      if (
+        hybridWeights &&
+        keywordSignal === "disabled" &&
+        !warnedHybridNoKeyword
+      ) {
+        warnedHybridNoKeyword = true;
+        warnLogger.warn(
+          "hybrid search requested but no keyword channel is available; using semantic-only results.",
+        );
+      }
+
       const tRank = performance.now();
-      let results = [...byId.values()].sort(
-        (a, b) => b.similarity - a.similarity,
-      );
+      let results = [...byId.values()].sort((a, b) => {
+        const diff = b.similarity - a.similarity;
+        if (diff !== 0) return diff;
+        // Deterministic tie-breaker for equal similarity scores.
+        return a.id.localeCompare(b.id);
+      });
 
       const mmrLambda =
         resolveMmr(options.mmr) ??
@@ -1215,9 +1330,25 @@ export class Wolbarg<HasLlm extends boolean = false> {
             : undefined,
         );
       let rankingReason = "cosine similarity";
+      let mmrApplied = false;
       if (mmrLambda !== null) {
-        results = applyMmr(results, Math.max(topK * 2, topK), mmrLambda);
-        rankingReason = `MMR(lambda=${mmrLambda})`;
+        // Select exactly `topK` diversified results from the over-fetched
+        // candidate pool. (Previously we selected `topK * 2`, which could
+        // no-op diversification when candidates were <= topK*2.)
+        mmrApplied = results.length > topK;
+        if (mmrApplied) {
+          results = applyMmr(results, topK, mmrLambda);
+          rankingReason = `MMR(lambda=${mmrLambda})`;
+        } else {
+          rankingReason = `MMR(lambda=${mmrLambda})(skipped:insufficient_candidates)`;
+        }
+      }
+
+      if (options.rerank === true && !this.reranker && !warnedRerankNoProvider) {
+        warnedRerankNoProvider = true;
+        warnLogger.warn(
+          "rerank is enabled but no reranker provider is configured; using identity order.",
+        );
       }
 
       if (options.rerank && this.reranker) {
@@ -1263,14 +1394,18 @@ export class Wolbarg<HasLlm extends boolean = false> {
         tags: commonTags(serialized.map((result) => result.metadata)),
       };
 
-      if (!explain) {
-        if (options.includeGraph === true && this.graph) {
-          const tGraph = performance.now();
-          for (const hit of serialized) {
+      if (options.includeGraph === true && this.graph) {
+        const tGraph = performance.now();
+        // Batch hydration for lower end-to-end latency.
+        await Promise.all(
+          serialized.map(async (hit) => {
             hit.related = await this.hydrateRelated(hit.id);
-          }
-          trace.mark("databaseReadMs", performance.now() - tGraph);
-        }
+          }),
+        );
+        trace.mark("databaseReadMs", performance.now() - tGraph);
+      }
+
+      if (!explain) {
         trace.success(telemetryFields);
         return serialized;
       }
@@ -1302,7 +1437,7 @@ export class Wolbarg<HasLlm extends boolean = false> {
           keyword: keywordSignal,
           reranker:
             options.rerank === true && this.reranker ? "enabled" : "disabled",
-          mmr: mmrLambda === null ? "disabled" : "enabled",
+          mmr: mmrLambda === null ? "disabled" : mmrApplied ? "enabled" : "disabled",
           recency: "disabled",
         },
         results: explanations.map((hit) => ({
@@ -1425,33 +1560,37 @@ export class Wolbarg<HasLlm extends boolean = false> {
 
       const result = await this.withWriteLock(async () => {
         const tWrite = performance.now();
-        const summaryRow = await storage.insertMemory({
-          id: summaryId,
-          organization,
-          agent: options.agent.trim(),
-          contentText: summaryText,
-          metadata: {
-            compressed: true,
-            sourceCount: records.length,
-            sourceIds: records.map((r) => r.id),
-          },
-          embedding: vector,
-          createdAt: timestamp,
-          updatedAt: timestamp,
+        const txResult = await storage.withTransaction(async () => {
+          const summaryRow = await storage.insertMemory({
+            id: summaryId,
+            organization,
+            agent: options.agent.trim(),
+            contentText: summaryText,
+            metadata: {
+              compressed: true,
+              sourceCount: records.length,
+              sourceIds: records.map((r) => r.id),
+            },
+            embedding: vector,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          });
+
+          const archivedIds = await storage.archiveMemories(
+            records.map((r) => r.id),
+            organization,
+            summaryId,
+            timestamp,
+          );
+
+          return {
+            summary: toMemoryRecord(summaryRow),
+            archivedIds,
+          };
         });
 
-        const archivedIds = await storage.archiveMemories(
-          records.map((r) => r.id),
-          organization,
-          summaryId,
-          timestamp,
-        );
         trace.mark("databaseWriteMs", performance.now() - tWrite);
-
-        return {
-          summary: toMemoryRecord(summaryRow),
-          archivedIds,
-        };
+        return txResult;
       });
 
       trace.success({
@@ -1713,8 +1852,24 @@ export class Wolbarg<HasLlm extends boolean = false> {
       await this.requireReady();
       const graph = this.requireGraph("getRelated");
       assertNonEmptyString(memoryId, "memoryId");
+
+      let validatedOptions = options;
+      if (options?.depth !== undefined) {
+        if (!Number.isFinite(options.depth)) {
+          throw new ConfigurationError("graph.depth must be a finite number");
+        }
+        if (options.depth < 1) {
+          throw new ConfigurationError("graph.depth must be >= 1");
+        }
+        if (options.depth > 16) {
+          validatedOptions = { ...options, depth: 16 };
+        }
+      }
       const tGraph = performance.now();
-      const related = await this.hydrateRelated(memoryId.trim(), options);
+      const related = await this.hydrateRelated(
+        memoryId.trim(),
+        validatedOptions,
+      );
       trace.mark("databaseReadMs", performance.now() - tGraph);
       trace.success({
         provider: graph.name,
@@ -1907,7 +2062,16 @@ export class Wolbarg<HasLlm extends boolean = false> {
       this.assertGraphCheckpointSupported("checkpoint");
       const tCheckpoint = performance.now();
       const meta = await provider.checkpoint(name, source, options);
-      await this.snapshotGraphAlongside(meta.snapshotPath, "checkpoint");
+      try {
+        await this.snapshotGraphAlongside(meta.snapshotPath, "checkpoint");
+      } catch (error) {
+        // Avoid leaving a partially-written graph sidecar directory behind.
+        const sidecar = this.graphSnapshotDir(meta.snapshotPath);
+        if (fs.existsSync(sidecar)) {
+          fs.rmSync(sidecar, { recursive: true, force: true });
+        }
+        throw error;
+      }
       trace.mark("databaseWriteMs", performance.now() - tCheckpoint);
       trace.success({
         provider: provider.name,
@@ -1980,8 +2144,15 @@ export class Wolbarg<HasLlm extends boolean = false> {
     try {
       await this.requireReady();
       const provider = this.requireCheckpointProvider();
+      const existing = await provider.getCheckpoint(name);
       const tDelete = performance.now();
       const removed = await provider.deleteCheckpoint(name);
+      if (removed && existing) {
+        const sidecar = this.graphSnapshotDir(existing.snapshotPath);
+        if (fs.existsSync(sidecar)) {
+          fs.rmSync(sidecar, { recursive: true, force: true });
+        }
+      }
       trace.mark("databaseWriteMs", performance.now() - tDelete);
       trace.success({
         provider: provider.name,
@@ -2049,6 +2220,8 @@ export class Wolbarg<HasLlm extends boolean = false> {
         exportPath,
         source,
         this.organization ?? undefined,
+        this.embedding?.model,
+        this.embeddingDimensions ?? undefined,
       );
       await this.snapshotGraphAlongside(result.path, "export");
       trace.success({
@@ -2072,16 +2245,22 @@ export class Wolbarg<HasLlm extends boolean = false> {
     let storageClosed = false;
     try {
       await this.requireReady();
+      // Fail fast before closing storage/graph for snapshots.
+      this.assertGraphCheckpointSupported("import");
       const target = this.requireMemoryDbPath();
       if (this.storage) {
         await this.storage.close();
         storageClosed = true;
       }
       const graphClosed = await this.closeGraphForSnapshot();
-      this.assertGraphCheckpointSupported("import");
       const result: MemoryImportResult = await this.transfer.importFrom(
         exportPath,
         target,
+        {
+          organization: this.organization ?? undefined,
+          embeddingModel: this.embedding?.model,
+          embeddingDimensions: this.embeddingDimensions ?? undefined,
+        },
       );
       await this.restoreGraphAlongside(result.path, "import");
       if (graphClosed) {
@@ -2319,19 +2498,28 @@ export class Wolbarg<HasLlm extends boolean = false> {
     const graph = this.requireGraph("getRelated");
     const related = await graph.getRelated(memoryId, options);
     const { storage, organization } = await this.requireReady();
+    const rows = await Promise.all(
+      related.map((stub) => storage.getMemoryById(stub.id, organization)),
+    );
     const out: MemoryRecord[] = [];
-    for (const stub of related) {
-      const row = await storage.getMemoryById(stub.id, organization);
-      if (row) {
-        out.push(toMemoryRecord(row));
-      } else {
-        out.push(stub);
-      }
+    for (let i = 0; i < related.length; i += 1) {
+      const stub = related[i]!;
+      const row = rows[i]!;
+      out.push(row ? toMemoryRecord(row) : stub);
     }
     return out;
   }
 
   private requireMemoryDbPath(): string {
+    if (this.storage && !(this.storage instanceof SqliteStorageProvider)) {
+      throw new ConfigurationError(
+        "This operation requires a file-backed SQLite database (checkpoints / export-import are not supported for PostgreSQL).",
+        {
+          suggestion:
+            'Use database: { provider: "sqlite", url: "./memory.db" }',
+        },
+      );
+    }
     if (!this.memoryDbPath || this.memoryDbPath === ":memory:") {
       throw new ConfigurationError(
         "This operation requires a file-backed SQLite memory database (not :memory:).",

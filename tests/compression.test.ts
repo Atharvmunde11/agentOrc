@@ -64,4 +64,54 @@ describe("compression", () => {
     );
     await ctx.close();
   });
+
+  it("is atomic: archive failure does not leave summary behind", async () => {
+    const ctx = await createInitializedClient(undefined, {
+      summaryText: "Atomic compress summary marker.",
+    });
+
+    const a = await ctx.remember({
+      agent: "research",
+      content: { text: "Stripe supports recurring invoices." },
+    });
+    const b = await ctx.remember({
+      agent: "research",
+      content: { text: "Invoices can be billed monthly or yearly." },
+    });
+
+    const storage = (ctx as any).storage;
+    const statements = storage?.statements;
+    expect(statements?.archiveMemory?.run).toBeInstanceOf(Function);
+    const originalArchiveRun = statements.archiveMemory.run.bind(
+      statements.archiveMemory,
+    );
+    let archiveCalls = 0;
+
+    statements.archiveMemory.run = (...args: unknown[]) => {
+      archiveCalls += 1;
+      throw new Error(`simulated archive failure (call ${archiveCalls})`);
+    };
+
+    try {
+      await expect(ctx.compress({ agent: "research" })).rejects.toThrow(
+        /simulated archive failure/i,
+      );
+    } finally {
+      statements.archiveMemory.run = originalArchiveRun;
+    }
+
+    const stats = await ctx.stats();
+    expect(stats.activeMemories).toBe(2);
+    expect(stats.archivedMemories).toBe(0);
+
+    const historyA = await ctx.history({ id: a.id });
+    expect(historyA.memory.archived).toBe(false);
+    expect(historyA.events.some((e) => e.eventType === "archived")).toBe(false);
+
+    const historyB = await ctx.history({ id: b.id });
+    expect(historyB.memory.archived).toBe(false);
+    expect(historyB.events.some((e) => e.eventType === "archived")).toBe(false);
+
+    await ctx.close();
+  });
 });

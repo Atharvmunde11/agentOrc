@@ -119,18 +119,24 @@ export class InMemoryVectorIndex {
         dot += queryNormalized[d]! * data[base + d]!;
       }
       const distance = 1 - dot;
+      const rowid = rowids[i]!;
 
       if (heapSize < k) {
         heapDist[heapSize] = distance;
-        heapRow[heapSize] = rowids[i]!;
+        heapRow[heapSize] = rowid;
         heapSize += 1;
         if (heapSize === k) {
           buildMaxHeap(heapDist, heapRow, k);
         }
-      } else if (distance < heapDist[0]!) {
-        heapDist[0] = distance;
-        heapRow[0] = rowids[i]!;
-        siftDown(heapDist, heapRow, 0, k);
+      } else {
+        const worstDist = heapDist[0]!;
+        const worstRow = heapRow[0]!;
+        // Deterministic heap behavior: when distances tie, keep the smaller rowid.
+        if (distance < worstDist || (distance === worstDist && rowid < worstRow)) {
+          heapDist[0] = distance;
+          heapRow[0] = rowid;
+          siftDown(heapDist, heapRow, 0, k);
+        }
       }
     }
 
@@ -138,7 +144,11 @@ export class InMemoryVectorIndex {
     for (let i = 0; i < heapSize; i += 1) {
       hits[i] = { memoryRowid: heapRow[i]!, distance: heapDist[i]! };
     }
-    hits.sort((a, b) => a.distance - b.distance);
+    hits.sort((a, b) => {
+      const diff = a.distance - b.distance;
+      if (diff !== 0) return diff;
+      return a.memoryRowid - b.memoryRowid;
+    });
     return hits;
   }
 
@@ -202,8 +212,16 @@ function siftDown(
     let largest = i;
     const left = (i << 1) + 1;
     const right = left + 1;
-    if (left < n && dist[left]! > dist[largest]!) largest = left;
-    if (right < n && dist[right]! > dist[largest]!) largest = right;
+    if (
+      left < n &&
+      (dist[left]! > dist[largest]! ||
+        (dist[left]! === dist[largest]! && rows[left]! > rows[largest]!))
+    ) largest = left;
+    if (
+      right < n &&
+      (dist[right]! > dist[largest]! ||
+        (dist[right]! === dist[largest]! && rows[right]! > rows[largest]!))
+    ) largest = right;
     if (largest === i) return;
     const td = dist[i]!;
     dist[i] = dist[largest]!;
